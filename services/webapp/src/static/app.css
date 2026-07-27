@@ -1,0 +1,282 @@
+/* RiskRadar styles.
+   Palette values come from the dataviz reference palette and were run through
+   scripts/validate_palette.js in both modes (all six checks pass).
+   Dark mode is a selected set of steps for the dark surface, not a flip. */
+
+:root {
+  color-scheme: light;
+  --surface-1: #fcfcfb;
+  --page: #f9f9f7;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #898781;
+  --grid: #e1e0d9;
+  --baseline: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.10);
+
+  /* sequential blue — risk magnitude */
+  --seq-100: #cde2fb;
+  --seq-250: #86b6ef;
+  --seq-450: #2a78d6;
+  --seq-600: #184f95;
+
+  /* diverging poles — sentiment polarity (blue positive / red negative) */
+  --pos: #2a78d6;
+  --neg: #e34948;
+  --mid: #f0efec;
+
+  /* status — fixed, never themed. Always shipped with an icon + label. */
+  --good: #0ca30c;
+  --warning: #fab219;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+
+  --radius: 10px;
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --page: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --grid: #2c2c2a;
+    --baseline: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --seq-100: #184f95;
+    --seq-250: #256abf;
+    --seq-450: #3987e5;
+    --seq-600: #86b6ef;
+    --pos: #3987e5;
+    --neg: #e66767;
+    --mid: #383835;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-1: #1a1a19;
+  --page: #0d0d0d;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #898781;
+  --grid: #2c2c2a;
+  --baseline: #383835;
+  --border: rgba(255, 255, 255, 0.10);
+  --seq-100: #184f95;
+  --seq-250: #256abf;
+  --seq-450: #3987e5;
+  --seq-600: #86b6ef;
+  --pos: #3987e5;
+  --neg: #e66767;
+  --mid: #383835;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  background: var(--page);
+  color: var(--text-primary);
+  line-height: 1.5;
+  font-size: 15px;
+}
+
+a { color: var(--seq-450); }
+
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+
+/* ---- header ---- */
+header.top {
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+  position: sticky; top: 0; z-index: 20;
+}
+header.top .wrap {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 58px; gap: 16px;
+}
+.brand { font-weight: 650; letter-spacing: -0.01em; text-decoration: none; color: var(--text-primary); }
+.brand span { color: var(--seq-450); }
+nav.links { display: flex; gap: 18px; align-items: center; }
+nav.links a { color: var(--text-secondary); text-decoration: none; font-size: 14px; }
+nav.links a:hover { color: var(--text-primary); }
+
+/* ---- cards ---- */
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  margin-bottom: 18px;
+}
+.card > h2 {
+  margin: 0 0 4px; font-size: 15px; font-weight: 620;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.card .sub { margin: 0 0 14px; color: var(--text-muted); font-size: 13px; }
+
+/* ---- status pills: status color NEVER alone, always icon + label ---- */
+.pills { display: flex; flex-wrap: wrap; gap: 8px; }
+.pill {
+  display: inline-flex; align-items: center; gap: 7px;
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 5px 12px; font-size: 13px; color: var(--text-secondary);
+  background: var(--surface-1);
+}
+.pill .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.pill .ico { font-size: 11px; font-weight: 700; }
+.pill.ok .dot { background: var(--good); }
+.pill.ok .ico { color: var(--good); }
+.pill.bad .dot { background: var(--critical); }
+.pill.bad .ico { color: var(--critical); }
+.pill.wait .dot { background: var(--warning); }
+.pill.wait .ico { color: var(--warning); }
+.pill b { color: var(--text-primary); font-weight: 600; }
+
+/* ---- risk meters: ratio against a per-ticker limit ---- */
+.meter-row { padding: 13px 0; border-bottom: 1px solid var(--grid); }
+.meter-row:last-child { border-bottom: 0; }
+.meter-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px; margin-bottom: 7px;
+}
+.meter-name { font-weight: 600; font-size: 14px; }
+.meter-name small { color: var(--text-muted); font-weight: 400; margin-left: 6px; }
+.meter-val { font-variant-numeric: tabular-nums; font-size: 14px; color: var(--text-secondary); }
+.meter-val strong { color: var(--text-primary); font-size: 16px; }
+
+/* Track is the same ramp as the fill, at its lightest step (recessive). */
+.track {
+  position: relative; height: 10px; border-radius: 5px;
+  background: var(--grid); overflow: visible;
+}
+.fill {
+  height: 100%; border-radius: 5px;   /* 4px+ rounded data-end, anchored at 0 */
+  background: var(--seq-450);
+  transition: width 400ms ease;
+  min-width: 3px;
+}
+.fill.over { background: var(--critical); }
+
+/* The per-ticker alert cut. A fixed line here would misstate how alerting works. */
+.cut {
+  position: absolute; top: -4px; bottom: -4px; width: 2px;
+  background: var(--text-secondary); border-radius: 1px;
+}
+.cut::after {
+  content: ""; position: absolute; left: -3px; top: -3px;
+  border-left: 4px solid transparent; border-right: 4px solid transparent;
+  border-top: 4px solid var(--text-secondary);
+}
+.meter-foot {
+  display: flex; justify-content: space-between; gap: 12px;
+  margin-top: 6px; font-size: 12px; color: var(--text-muted);
+}
+.meter-foot .headline { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.over-label { color: var(--critical); font-weight: 600; }
+.warming { color: var(--text-muted); font-style: italic; }
+
+/* ---- sentiment chips: diverging, value always shown (never colour alone) ---- */
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; font-variant-numeric: tabular-nums;
+  border-radius: 4px; padding: 1px 6px; flex: none;
+  border: 1px solid var(--border); color: var(--text-secondary);
+}
+.chip i { width: 7px; height: 7px; border-radius: 2px; flex: none; font-style: normal; }
+.chip.neg i { background: var(--neg); }
+.chip.pos i { background: var(--pos); }
+.chip.neu i { background: var(--baseline); }
+
+/* ---- headlines ---- */
+.feed { list-style: none; margin: 0; padding: 0; }
+.feed li {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 9px 0; border-bottom: 1px solid var(--grid); font-size: 14px;
+}
+.feed li:last-child { border-bottom: 0; }
+.feed a { color: var(--text-primary); text-decoration: none; }
+.feed a:hover { text-decoration: underline; }
+.feed .meta { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+.tickers { display: flex; gap: 4px; flex-wrap: wrap; }
+.tk {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+  border: 1px solid var(--border); border-radius: 3px;
+  padding: 0 5px; color: var(--text-secondary);
+}
+
+/* ---- tables (the table-view twin for every chart) ---- */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--grid); }
+th { color: var(--text-muted); font-weight: 600; font-size: 12px; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.tag {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--border); color: var(--text-secondary);
+}
+.tag.sim { border-style: dashed; }
+
+/* ---- forms & buttons ---- */
+input[type=email], input[type=password], input[type=url], input[type=text] {
+  width: 100%; padding: 9px 11px; font: inherit; font-size: 14px;
+  border: 1px solid var(--border); border-radius: 7px;
+  background: var(--page); color: var(--text-primary);
+}
+label { display: block; font-size: 13px; color: var(--text-secondary); margin: 12px 0 5px; }
+button, .btn {
+  font: inherit; font-size: 14px; font-weight: 550; cursor: pointer;
+  padding: 9px 16px; border-radius: 7px; border: 1px solid transparent;
+  background: var(--seq-450); color: #fff; text-decoration: none;
+  display: inline-flex; align-items: center; gap: 7px;
+}
+button:hover, .btn:hover { background: var(--seq-600); }
+button.ghost, .btn.ghost {
+  background: transparent; color: var(--text-primary); border-color: var(--border);
+}
+button.ghost:hover, .btn.ghost:hover { background: var(--page); }
+button:disabled { opacity: 0.55; cursor: not-allowed; }
+.error {
+  background: color-mix(in srgb, var(--critical) 10%, transparent);
+  border: 1px solid var(--critical); color: var(--text-primary);
+  padding: 9px 12px; border-radius: 7px; font-size: 13px; margin-bottom: 12px;
+}
+.note { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
+
+/* ---- ticker picker ---- */
+.picker { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.picker label {
+  margin: 0; cursor: pointer; user-select: none;
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 13px; font-size: 14px; color: var(--text-secondary);
+  display: flex; align-items: center; gap: 8px; background: var(--surface-1);
+}
+.picker input { margin: 0; }
+.picker label:has(input:checked) {
+  border-color: var(--seq-450); color: var(--text-primary);
+  background: color-mix(in srgb, var(--seq-450) 8%, var(--surface-1));
+}
+
+/* ---- layout ---- */
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.grid > * { min-width: 0; }
+@media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+
+.auth { max-width: 380px; margin: 56px auto; }
+.hero { padding: 46px 0 26px; }
+.hero h1 { font-size: 34px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -0.02em; }
+.hero p { font-size: 16px; color: var(--text-secondary); max-width: 60ch; margin: 0 0 20px; }
+.stat-row { display: flex; gap: 28px; flex-wrap: wrap; margin: 22px 0 6px; }
+.stat .v { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; }
+.stat .k { font-size: 12px; color: var(--text-muted); }
+
+/* Refetch holds the previous render rather than flashing a skeleton. */
+.stale { opacity: 0.55; transition: opacity 150ms; }
+
+.overflow-x { overflow-x: auto; }
+footer { padding: 30px 0; color: var(--text-muted); font-size: 12px; }

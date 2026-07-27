@@ -1,0 +1,416 @@
+"""RiskRadar streaming job.
+
+    news.raw
+      -> keyed micro-batch enrichment (5 articles OR a 1s processing-time timer)
+      -> news.enriched + redis headlines + per-ticker mentions
+      -> watermarks (30s out-of-orderness, 30s idleness)
+      -> key_by(ticker), sliding 15m/3m window, risk scoring
+      -> redis features + baseline + alert fan-out
+
+Three things here are deliberate corrections of the old repo's job, which could
+never have run:
+
+1.  NO SinkFunction SUBCLASSES.  `pyflink.datastream.functions.SinkFunction`
+    wraps a *Java* object (`__init__(self, sink_func: Union[str, JavaObject])`);
+    PyFlink has no user-defined Python sinks.  The old RedisFeatureSink and
+    AlertingSink subclassed it without calling super().__init__, so add_sink()
+    failed at graph-construction time.  All side effects here live in map()
+    operators, which is the supported way.
+
+2.  KeyedProcessFunction, not ProcessFunction, for the micro-batch.  Only
+    KeyedProcessFunction has on_timer() — a plain ProcessFunction has no timer
+    service, so the old batch never flushed on time, only when the next message
+    happened to arrive.
+
+3.  Watermarks are assigned AFTER enrichment, on the mentions stream, by
+    re-reading event_ts from the payload.  Assigning at the source would be
+    wrong: records emitted from a processing-time timer callback carry no
+    timestamp, and the downstream window would reject them.
+"""
+from typing import Iterable, List, Optional
+import json
+import logging
+import os
+
+from pyflink.common import Duration, Types, WatermarkStrategy
+from pyflink.common.watermark_strategy import TimestampAssigner
+from pyflink.datastream import (
+    CheckpointingMode, KeyedProcessFunction, ProcessWindowFunction, RuntimeContext,
+    StreamExecutionEnvironment,
+)
+from pyflink.datastream.connectors.kafka import (
+    DeliveryGuarantee, KafkaOffsetsInitializer, KafkaRecordSerializationSchema,
+    KafkaSink, KafkaSource,
+)
+from pyflink.common.serialization import SimpleStringSchema
+from pyflink.datastream.state import ListStateDescriptor, ValueStateDescriptor
+from pyflink.datastream.window import SlidingEventTimeWindows
+from pyflink.common.time import Time
+
+from riskcore import config
+from riskcore.models import CompanyMention, EnrichedArticle, NewsArticle, RiskFeatures
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+log = logging.getLogger("news_job")
+
+
+# ===========================================================================
+# stage 1 — micro-batched enrichment
+# ===========================================================================
+class MicroBatchEnrich(KeyedProcessFunction):
+    """Buffer articles and enrich them in one HTTP call.
+
+    Flushes when the buffer reaches ENRICH_BATCH_SIZE, or when a processing-time
+    timer fires ENRICH_BATCH_TIMEOUT_MS after the first buffered article —
+    whichever comes first. The timer is what makes latency bounded when traffic
+    is thin, which at ~2.6 articles/minute is most of the time.
+    """
+
+    def __init__(self):
+        self.buffer = None
+        self.timer = None
+        self.session = None
+
+    def open(self, runtime_context: RuntimeContext):
+        self.buffer = runtime_context.get_list_state(
+            ListStateDescriptor("enrich_buffer", Types.STRING())
+        )
+        self.timer = runtime_context.get_state(
+            ValueStateDescriptor("flush_timer", Types.LONG())
+        )
+        import requests
+        self.session = requests.Session()
+
+    def process_element(self, value, ctx):
+        self.buffer.add(value)
+        pending = list(self.buffer.get())
+
+        if len(pending) >= config.ENRICH_BATCH_SIZE:
+            self._cancel_timer(ctx)
+            yield from self._flush(pending)
+            return
+
+        if self.timer.value() is None:
+            fire_at = ctx.timer_service().current_processing_time() + config.ENRICH_BATCH_TIMEOUT_MS
+            ctx.timer_service().register_processing_time_timer(fire_at)
+            self.timer.update(fire_at)
+
+    def on_timer(self, timestamp, ctx):
+        pending = list(self.buffer.get())
+        self.timer.clear()
+        if pending:
+            yield from self._flush(pending)
+
+    def _cancel_timer(self, ctx):
+        existing = self.timer.value()
+        if existing is not None:
+            try:
+                ctx.timer_service().delete_processing_time_timer(existing)
+            except Exception:                          # noqa: BLE001
+                pass
+            self.timer.clear()
+
+    def _flush(self, pending: List[str]) -> Iterable[str]:
+        self.buffer.clear()
+
+        articles = []
+        for raw in pending:
+            try:
+                articles.append(NewsArticle.from_json(raw))
+            except Exception:                          # noqa: BLE001
+                log.warning("undecodable article dropped")
+
+        if not articles:
+            return
+
+        results = self._enrich(articles)
+        for article in articles:
+            payload = results.get(article.article_id)
+            if payload is None:
+                continue
+            enriched = EnrichedArticle(
+                article_id=article.article_id,
+                title=article.title,
+                url=article.url,
+                source=article.source,
+                published_at=article.published_at,
+                sentiment=float(payload.get("sentiment", 0.0)),
+                companies=payload.get("companies", []),
+                model=results.get("__model__", ""),
+                feed=article.feed,
+            )
+            yield enriched.to_json()
+
+    def _enrich(self, articles: List[NewsArticle]) -> dict:
+        body = {"articles": [
+            {"article_id": a.article_id, "title": a.title, "summary": a.summary}
+            for a in articles
+        ]}
+        try:
+            resp = self.session.post(
+                f"{config.ENRICHMENT_URL}/v1/enrich/batch",
+                json=body, timeout=config.ENRICH_TIMEOUT_SECONDS,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:                       # noqa: BLE001 - never kill the job
+            log.error("enrichment failed for %d articles: %s", len(articles), exc)
+            return {}
+
+        out = {r["article_id"]: r for r in data.get("results", [])}
+        out["__model__"] = data.get("model", "")
+        return out
+
+
+# ===========================================================================
+# stage 2 — fan-out helpers
+# ===========================================================================
+class HeadlinesWriter:
+    """Push enriched articles onto the Redis ring buffer the dashboard reads."""
+
+    def __init__(self):
+        self._redis = None
+
+    def __call__(self, value: str) -> str:
+        try:
+            if self._redis is None:
+                import redis
+                self._redis = redis.from_url(config.REDIS_URL)
+            from riskcore import headlines
+            doc = json.loads(value)
+            headlines.push(self._redis, {
+                "article_id": doc.get("article_id"),
+                "title": doc.get("title"),
+                "url": doc.get("url"),
+                "source": doc.get("source"),
+                "published_at": doc.get("published_at"),
+                "sentiment": doc.get("sentiment"),
+                "companies": doc.get("companies", []),
+            })
+        except Exception as exc:                       # noqa: BLE001
+            log.error("headline write failed: %s", exc)
+        return value
+
+
+def to_mentions(value: str) -> Iterable[str]:
+    """Explode one enriched article into one record per matched ticker.
+
+    The logic itself lives in riskcore.risk so the offline calibration harness
+    buckets exactly what this pipeline buckets.
+    """
+    from riskcore.risk import explode_mentions
+    try:
+        doc = json.loads(value)
+    except Exception:                                  # noqa: BLE001
+        return
+    for mention in explode_mentions(doc):
+        yield mention.to_json()
+
+
+class MentionTimestampAssigner(TimestampAssigner):
+    """Read event time back out of the payload.
+
+    This is why watermarking happens here and not at the source: records emitted
+    from a processing-time timer have no attached timestamp, so the only
+    reliable event time is the one carried in the JSON.
+    """
+
+    def extract_timestamp(self, value: str, record_timestamp: int) -> int:
+        try:
+            return int(json.loads(value)["event_ts"])
+        except Exception:                              # noqa: BLE001
+            return record_timestamp if record_timestamp > 0 else 0
+
+
+# ===========================================================================
+# stage 3 — windowed risk scoring
+# ===========================================================================
+class RiskWindow(ProcessWindowFunction):
+    """Aggregate one ticker's mentions in one sliding window into RiskFeatures."""
+
+    def process(self, key, context, elements):
+        from datetime import datetime, timezone
+        from riskcore.risk import build_features
+
+        mentions = []
+        for raw in elements:
+            try:
+                mentions.append(CompanyMention.from_json(raw))
+            except Exception:                          # noqa: BLE001
+                continue
+
+        if not mentions:
+            return
+
+        window = context.window()
+        start = datetime.fromtimestamp(window.start / 1000, tz=timezone.utc)
+        end = datetime.fromtimestamp(window.end / 1000, tz=timezone.utc)
+
+        yield build_features(key, mentions, start, end).to_json()
+
+
+class FeatureWriter:
+    """Persist features to Redis and feed the ticker's rolling baseline."""
+
+    def __init__(self):
+        self._redis = None
+        self._store = None
+
+    def __call__(self, value: str) -> str:
+        try:
+            if self._redis is None:
+                import redis
+                from riskcore.baseline import BaselineStore
+                self._redis = redis.from_url(config.REDIS_URL)
+                self._store = BaselineStore(self._redis)
+
+            feats = RiskFeatures.from_json(value)
+            payload = json.dumps(feats.to_dict(), separators=(",", ":"))
+
+            pipe = self._redis.pipeline()
+            pipe.set(f"feat:{feats.ticker}:latest", payload)
+            pipe.setex(f"feat:{feats.ticker}:{feats.window_end}", 7 * 86400, payload)
+            pipe.execute()
+
+            # Every window feeds the baseline, including quiet ones — otherwise
+            # the distribution would only contain spikes and the percentile
+            # would be meaningless.
+            self._store.record(feats.ticker, feats.risk_score)
+        except Exception as exc:                       # noqa: BLE001
+            log.error("feature write failed: %s", exc)
+        return value
+
+
+class AlertFanout:
+    """Decide against the ticker's own baseline, then fan out to subscribers."""
+
+    def __init__(self):
+        self._redis = None
+        self._store = None
+        self._ready = False
+
+    def __call__(self, value: str) -> str:
+        try:
+            if self._redis is None:
+                import redis
+                from riskcore.baseline import BaselineStore
+                from riskcore import db
+                self._redis = redis.from_url(config.REDIS_URL)
+                self._store = BaselineStore(self._redis)
+                try:
+                    db.ensure_tables()
+                except Exception as exc:               # noqa: BLE001
+                    log.warning("ensure_tables: %s", exc)
+
+            from riskcore import alerting
+
+            feats = RiskFeatures.from_json(value)
+            decision = self._store.evaluate(
+                feats.ticker, feats.risk_score, feats.total_mentions
+            )
+            if not decision.should_alert:
+                return value
+
+            if alerting.in_cooldown(self._redis, feats.ticker):
+                log.info("%s over baseline but in cooldown", feats.ticker)
+                return value
+
+            alert = alerting.build_alert(feats, decision.threshold or 0.0)
+            alerting.fan_out(alert)
+            alerting.mark_sent(self._redis, feats.ticker)
+            log.info("ALERT %s risk=%.3f baseline=%.3f n=%d",
+                     feats.ticker, feats.risk_score, decision.threshold or 0.0,
+                     decision.samples)
+        except Exception as exc:                       # noqa: BLE001
+            log.error("alert fan-out failed: %s", exc)
+        return value
+
+
+# ===========================================================================
+# topology
+# ===========================================================================
+def build_pipeline(env: StreamExecutionEnvironment) -> None:
+    source = (
+        KafkaSource.builder()
+        .set_bootstrap_servers(config.KAFKA_BOOTSTRAP)
+        .set_topics(config.TOPIC_RAW)
+        .set_group_id("riskradar-flink")
+        .set_starting_offsets(KafkaOffsetsInitializer.latest())
+        .set_value_only_deserializer(SimpleStringSchema())
+        .build()
+    )
+
+    raw = env.from_source(
+        source, WatermarkStrategy.no_watermarks(), "news.raw"
+    ).uid("kafka-source")
+
+    # Single key: parallelism is 1 and we want one shared batch buffer. key_by is
+    # required regardless — timers only exist on keyed streams.
+    enriched = (
+        raw.key_by(lambda _: "batch", key_type=Types.STRING())
+           .process(MicroBatchEnrich(), output_type=Types.STRING())
+           .name("micro-batch enrich")
+           .uid("enrich")
+    )
+
+    sink = (
+        KafkaSink.builder()
+        .set_bootstrap_servers(config.KAFKA_BOOTSTRAP)
+        .set_record_serializer(
+            KafkaRecordSerializationSchema.builder()
+            .set_topic(config.TOPIC_ENRICHED)
+            .set_value_serialization_schema(SimpleStringSchema())
+            .build()
+        )
+        .set_delivery_guarantee(DeliveryGuarantee.AT_LEAST_ONCE)
+        .build()
+    )
+    enriched.sink_to(sink).name("news.enriched").uid("kafka-sink")
+
+    enriched.map(HeadlinesWriter(), output_type=Types.STRING()) \
+            .name("redis headlines").uid("headlines")
+
+    mentions = enriched.flat_map(to_mentions, output_type=Types.STRING()) \
+                       .name("to mentions").uid("mentions")
+
+    watermarked = mentions.assign_timestamps_and_watermarks(
+        WatermarkStrategy
+        .for_bounded_out_of_orderness(Duration.of_seconds(config.WATERMARK_DELAY_SECONDS))
+        .with_timestamp_assigner(MentionTimestampAssigner())
+        # Without idleness the window stalls whenever a quiet stretch stops
+        # advancing the watermark — and quiet stretches are normal here.
+        .with_idleness(Duration.of_seconds(30))
+    ).name("watermarks").uid("watermarks")
+
+    features = (
+        watermarked
+        .key_by(lambda v: json.loads(v)["ticker"], key_type=Types.STRING())
+        .window(SlidingEventTimeWindows.of(
+            Time.seconds(config.WINDOW_SIZE_SECONDS),
+            Time.seconds(config.WINDOW_SLIDE_SECONDS),
+        ))
+        .process(RiskWindow(), output_type=Types.STRING())
+        .name(f"risk window {config.WINDOW_SIZE_SECONDS}s/{config.WINDOW_SLIDE_SECONDS}s")
+        .uid("risk-window")
+    )
+
+    (features
+        .map(FeatureWriter(), output_type=Types.STRING()).name("redis features").uid("features")
+        .map(AlertFanout(), output_type=Types.STRING()).name("alert fan-out").uid("alerts"))
+
+
+def main() -> None:
+    env = StreamExecutionEnvironment.get_execution_environment()
+    env.set_parallelism(1)                     # matches the single-partition topics
+
+    env.enable_checkpointing(30_000, CheckpointingMode.EXACTLY_ONCE)
+    checkpoint_dir = os.getenv("CHECKPOINT_DIR", "file:///tmp/flink-checkpoints")
+    env.get_checkpoint_config().set_checkpoint_storage_dir(checkpoint_dir)
+    env.get_checkpoint_config().set_min_pause_between_checkpoints(10_000)
+
+    build_pipeline(env)
+    env.execute("riskradar-news")
+
+
+if __name__ == "__main__":
+    main()

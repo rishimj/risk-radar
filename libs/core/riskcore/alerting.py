@@ -1,0 +1,227 @@
+"""Alert construction, cooldown, and multi-user Slack fan-out.
+
+Ported from the old repo's alerting.py, with two deliberate changes:
+
+1. Synchronous `requests`, not `aiohttp`/asyncio.  This runs inside a PyFlink
+   map operator; spinning an event loop per record there is a good way to
+   deadlock the Python harness.  Retry semantics are identical: 3 attempts,
+   `2 ** attempt` backoff, success requires HTTP 200 AND a body of "ok".
+
+2. Fan-out instead of one global webhook.  The old code returned early when the
+   webhook was the literal string "disabled" (news_processing_job.py:311), which
+   meant no alert was recorded at all.  Here the alert row is always written
+   first, then a delivery row per subscriber — so a user with no Slack still
+   sees their alert history in the app.
+"""
+from typing import Dict, Iterable, List, Optional, Tuple
+import logging
+import time
+
+import requests
+from boto3.dynamodb.conditions import Key
+
+from . import config, db
+from .models import Alert, RiskFeatures, iso, utcnow
+from .risk import severity_for
+
+log = logging.getLogger(__name__)
+
+_EMOJI = {"high": "🔴", "medium": "🟡", "low": "🟢"}
+_COLOR = {"high": "#d7263d", "medium": "#f6a609", "low": "#2a9d8f"}
+
+
+# --------------------------------------------------------------------------
+# cooldown
+# --------------------------------------------------------------------------
+def _cooldown_key(ticker: str) -> str:
+    return f"alert:last_sent:{ticker}"
+
+
+def in_cooldown(redis_client, ticker: str) -> bool:
+    return bool(redis_client.exists(_cooldown_key(ticker)))
+
+
+def mark_sent(redis_client, ticker: str, minutes: Optional[int] = None) -> None:
+    ttl = (minutes if minutes is not None else config.ALERT_COOLDOWN_MINUTES) * 60
+    redis_client.setex(_cooldown_key(ticker), ttl, str(time.time()))
+
+
+def clear_cooldown(redis_client, ticker: str) -> None:
+    """Used by the simulate endpoint so a repeat demo always fires."""
+    redis_client.delete(_cooldown_key(ticker))
+
+
+# --------------------------------------------------------------------------
+# alert construction
+# --------------------------------------------------------------------------
+def build_alert(features: RiskFeatures, threshold: float, source: str = "live") -> Alert:
+    sev = severity_for(features.risk_score, config.SEVERITY_HIGH, config.SEVERITY_MEDIUM)
+    label = {"high": "CRITICAL", "medium": "WARNING", "low": "NOTICE"}[sev]
+    message = (
+        f"{label}: negative news risk for {features.ticker} "
+        f"(risk {features.risk_score:.3f} vs baseline {threshold:.3f})"
+    )
+    return Alert(
+        alert_id=Alert.new_id(),
+        ticker=features.ticker,
+        risk_score=features.risk_score,
+        baseline_p=round(threshold, 3),
+        severity=sev,
+        message=message,
+        window_end=features.window_end,
+        fired_at=iso(utcnow()),
+        source=source,
+        top_headline=features.top_headline,
+        top_url=features.top_url,
+    )
+
+
+def slack_payload(alert: Alert) -> Dict:
+    fields = [
+        {"title": "Risk score", "value": f"{alert.risk_score:.3f}", "short": True},
+        {"title": "Baseline (p{:.0f})".format(config.ALERT_PERCENTILE),
+         "value": f"{alert.baseline_p:.3f}", "short": True},
+    ]
+    if alert.top_headline:
+        fields.append({"title": "Top headline", "value": alert.top_headline, "short": False})
+
+    attachment = {
+        "color": _COLOR.get(alert.severity, "#888888"),
+        "fields": fields,
+        "footer": "RiskRadar" + (" · simulated" if alert.source == "simulated" else ""),
+        "ts": int(time.time()),
+    }
+    if alert.top_url:
+        attachment["title_link"] = alert.top_url
+
+    return {
+        "text": f"{_EMOJI.get(alert.severity, '⚪')} {alert.message}",
+        "attachments": [attachment],
+    }
+
+
+# --------------------------------------------------------------------------
+# slack delivery
+# --------------------------------------------------------------------------
+def send_to_slack(webhook_url: str, alert: Alert,
+                  max_retries: Optional[int] = None) -> bool:
+    retries = max_retries if max_retries is not None else config.SLACK_MAX_RETRIES
+    payload = slack_payload(alert)
+
+    for attempt in range(retries):
+        try:
+            resp = requests.post(
+                webhook_url, json=payload, timeout=config.SLACK_TIMEOUT_SECONDS
+            )
+            if resp.status_code == 200 and resp.text.strip() == "ok":
+                return True
+            log.warning(
+                "slack rejected alert %s (attempt %d/%d): %s %s",
+                alert.ticker, attempt + 1, retries, resp.status_code, resp.text[:120],
+            )
+        except Exception as exc:                      # noqa: BLE001 - never kill the job
+            log.error("slack error for %s (attempt %d/%d): %s",
+                      alert.ticker, attempt + 1, retries, exc)
+
+        if attempt < retries - 1:
+            time.sleep(2 ** attempt)
+
+    log.error("giving up on slack for %s after %d attempts", alert.ticker, retries)
+    return False
+
+
+# --------------------------------------------------------------------------
+# subscriber lookup (cached — this runs per window per ticker)
+# --------------------------------------------------------------------------
+_sub_cache: Dict[str, Tuple[float, List[Dict]]] = {}
+_SUB_TTL = 30.0
+
+
+def subscribers_for(ticker: str, use_cache: bool = True) -> List[Dict]:
+    """Users watching `ticker`, via the watchlists ticker-index GSI."""
+    now = time.time()
+    if use_cache:
+        hit = _sub_cache.get(ticker)
+        if hit and now - hit[0] < _SUB_TTL:
+            return hit[1]
+
+    try:
+        resp = db.table("watchlists").query(
+            IndexName="ticker-index",
+            KeyConditionExpression=Key("ticker").eq(ticker),
+        )
+        rows = resp.get("Items", [])
+    except Exception as exc:                          # noqa: BLE001
+        log.error("subscriber lookup failed for %s: %s", ticker, exc)
+        return []
+
+    users: List[Dict] = []
+    for row in rows:
+        uid = row.get("user_id")
+        if not uid:
+            continue
+        try:
+            u = db.table("users").get_item(Key={"user_id": uid}).get("Item")
+        except Exception:                             # noqa: BLE001
+            u = None
+        if u:
+            users.append(u)
+
+    _sub_cache[ticker] = (now, users)
+    return users
+
+
+def invalidate_subscriber_cache(ticker: Optional[str] = None) -> None:
+    if ticker is None:
+        _sub_cache.clear()
+    else:
+        _sub_cache.pop(ticker, None)
+
+
+# --------------------------------------------------------------------------
+# persistence + fan-out
+# --------------------------------------------------------------------------
+def persist_alert(alert: Alert) -> None:
+    item = alert.to_dict()
+    item["fired_key"] = f"{alert.fired_at}#{alert.alert_id}"
+    item["gsi_all"] = "ALERT"
+    # DynamoDB rejects float; store risk as a string-safe Decimal-ish value.
+    item["risk_score"] = str(alert.risk_score)
+    item["baseline_p"] = str(alert.baseline_p)
+    db.table("alerts").put_item(Item=item)
+
+
+def record_delivery(alert: Alert, user: Dict, status: str) -> None:
+    db.table("deliveries").put_item(Item={
+        "alert_id": alert.alert_id,
+        "user_id": user["user_id"],
+        "ticker": alert.ticker,
+        "status": status,                 # sent | failed | no_webhook
+        "fired_at": alert.fired_at,
+        "delivered_at": iso(utcnow()),
+    })
+
+
+def fan_out(alert: Alert) -> Dict[str, int]:
+    """Write the alert, then deliver to each subscriber.
+
+    The alert row is written unconditionally — even with zero subscribers, or
+    subscribers with no Slack webhook — so history stays complete.
+    """
+    persist_alert(alert)
+
+    stats = {"subscribers": 0, "sent": 0, "failed": 0, "no_webhook": 0}
+    for user in subscribers_for(alert.ticker):
+        stats["subscribers"] += 1
+        hook = (user.get("slack_webhook_url") or "").strip()
+        if not hook:
+            record_delivery(alert, user, "no_webhook")
+            stats["no_webhook"] += 1
+            continue
+
+        ok = send_to_slack(hook, alert)
+        record_delivery(alert, user, "sent" if ok else "failed")
+        stats["sent" if ok else "failed"] += 1
+
+    log.info("alert %s %s -> %s", alert.ticker, alert.alert_id[:8], stats)
+    return stats

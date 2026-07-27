@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Settings — RiskRadar{% endblock %}
+{% block content %}
+<div style="max-width:620px;margin:28px auto">
+
+  <div class="card">
+    <h2>Watchlist</h2>
+    <p class="sub">Alerts are delivered only for the tickers selected here.</p>
+    <div class="picker" id="picker">
+      {% for ticker, info in companies.items() %}
+        <label>
+          <input type="checkbox" value="{{ ticker }}"
+                 {% if ticker in watching %}checked{% endif %}>
+          {{ info.name }} <small style="color:var(--text-muted)">{{ ticker }}</small>
+        </label>
+      {% endfor %}
+    </div>
+    <p></p>
+    <button id="save-watchlist">Save watchlist</button>
+    <span id="watchlist-msg" class="note"></span>
+  </div>
+
+  <div class="card">
+    <h2>Slack</h2>
+    <p class="sub">
+      {% if user.slack_verified_at %}
+        Verified {{ user.slack_verified_at[:16].replace("T", " ") }}.
+      {% else %}
+        Not verified yet — send a test message to confirm it works.
+      {% endif %}
+    </p>
+    <input id="slack-url" type="url" placeholder="https://hooks.slack.com/services/..."
+           value="{{ user.slack_webhook_url or '' }}">
+    <p></p>
+    <button id="save-slack" class="ghost">Save</button>
+    <button id="test-slack">Send test message</button>
+    <span id="slack-msg" class="note"></span>
+  </div>
+
+  <div class="card">
+    <h2>Account</h2>
+    <p class="sub">{{ user.email }}</p>
+    <a class="btn ghost" href="/logout">Sign out</a>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/app.js"></script>
+<script>RiskRadar.initOnboarding();</script>
+{% endblock %}

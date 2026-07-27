@@ -1,0 +1,11 @@
+# Replace with your domain. Caddy provisions and renews the certificate itself.
+riskradar.example.com {
+	encode gzip
+	reverse_proxy localhost:3000
+}
+
+# The Flink UI (8081) and Kafka UI (8090) are deliberately NOT proxied. They have
+# no authentication whatsoever — exposing them publicly hands over the ability to
+# cancel jobs and read every topic. Reach them over an SSH tunnel instead:
+#
+#   ssh -L 8081:localhost:8081 -L 8090:localhost:8090 ec2-user@<elastic-ip>

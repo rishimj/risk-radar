@@ -1,0 +1,5 @@
+# Everything ingestion needs comes from the riskcore package (redis, kafka-python,
+# requests) which the Dockerfile installs from libs/core. This file exists so the
+# service can also be run standalone: pip install -r requirements.txt -e ../../libs/core
+redis>=5.0
+kafka-python>=2.0.2

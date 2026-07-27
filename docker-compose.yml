@@ -1,0 +1,236 @@
+name: riskradar
+
+# Arch note: every image below builds native on arm64 (M-series) EXCEPT the Flink
+# images, which are pinned to linux/amd64 in flink/Dockerfile — PyFlink publishes
+# no linux/aarch64 wheel at any version. On x86_64 (t3.xlarge) everything is native.
+
+x-common-env: &common-env
+  KAFKA_BOOTSTRAP: kafka:9092
+  REDIS_URL: redis://redis:6379/0
+  DYNAMO_ENDPOINT_URL: http://dynamodb-local:8000
+  AWS_REGION: ${AWS_REGION:-us-east-1}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-local}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-local}
+  ENRICHMENT_URL: http://enrichment:8082
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+services:
+  kafka:
+    image: apache/kafka:3.7.0
+    hostname: kafka
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      # Dual listener: INTERNAL for containers, EXTERNAL so host-side tools
+      # (tools/calibrate.py, seed_baseline.py) can reach the broker on localhost:29092.
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  # One-shot: create topics explicitly with 1 partition so they show up in Kafka UI
+  # before any traffic, and so partition count is deterministic (the Flink job runs
+  # parallelism 1 to match).
+  kafka-init:
+    image: apache/kafka:3.7.0
+    depends_on:
+      kafka: {condition: service_healthy}
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      "
+      for t in news.raw news.enriched; do
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+          --create --if-not-exists --topic $$t --partitions 1 --replication-factor 1
+      done
+      /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list
+      "
+    restart: "no"
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    # -dbPath with -sharedDb so data survives restarts and every client sees one namespace.
+    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-dbPath", "/data"]
+    working_dir: /home/dynamodblocal
+    user: root
+    ports:
+      - "8000:8000"
+    volumes:
+      - dynamodb-data:/data
+    restart: unless-stopped
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    depends_on:
+      kafka: {condition: service_healthy}
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: riskradar
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      DYNAMIC_CONFIG_ENABLED: "true"
+    restart: unless-stopped
+
+  enrichment:
+    build:
+      context: .
+      dockerfile: services/enrichment/Dockerfile
+    ports:
+      - "8082:8082"
+    environment:
+      <<: *common-env
+      SENTIMENT_MODEL: ${SENTIMENT_MODEL:-ProsusAI/finbert}
+      HF_HOME: /models
+    volumes:
+      - model-cache:/models
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8082/healthz')\" || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 120s   # first boot downloads FinBERT (~440MB)
+    restart: unless-stopped
+
+  ingestion:
+    build:
+      context: .
+      dockerfile: services/ingestion/Dockerfile
+    depends_on:
+      kafka: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    environment:
+      <<: *common-env
+      FETCH_INTERVAL_SECONDS: ${FETCH_INTERVAL_SECONDS:-120}
+      MAX_ARTICLE_AGE_HOURS: ${MAX_ARTICLE_AGE_HOURS:-6}
+      ENABLE_GNEWS: ${ENABLE_GNEWS:-true}
+      ENABLE_SEC: ${ENABLE_SEC:-false}
+      SEC_CONTACT_EMAIL: ${SEC_CONTACT_EMAIL:-}
+    restart: unless-stopped
+
+  webapp:
+    build:
+      context: .
+      dockerfile: services/webapp/Dockerfile
+    depends_on:
+      kafka: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    ports:
+      - "3000:3000"
+    environment:
+      <<: *common-env
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      FLINK_URL: http://flink-jobmanager:8081
+    restart: unless-stopped
+
+  # Populates each ticker's baseline from the last 24h of real news so the first
+  # hours after `make demo` aren't a cold-start alert storm. Reuses the webapp
+  # image because it already carries riskcore plus the tools/ directory.
+  seed-baseline:
+    build:
+      context: .
+      dockerfile: services/webapp/Dockerfile
+    depends_on:
+      redis: {condition: service_healthy}
+    environment:
+      <<: *common-env
+    command: ["python", "/app/tools/seed_baseline.py"]
+    restart: "no"
+
+  flink-jobmanager:
+    build:
+      context: .
+      dockerfile: flink/Dockerfile
+    ports:
+      - "8081:8081"
+    command: jobmanager
+    environment:
+      <<: *common-env
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        rest.address: flink-jobmanager
+        rest.bind-address: 0.0.0.0
+        parallelism.default: 1
+    volumes:
+      - flink-checkpoints:/tmp/flink-checkpoints
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/overview || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+
+  flink-taskmanager:
+    build:
+      context: .
+      dockerfile: flink/Dockerfile
+    depends_on:
+      flink-jobmanager: {condition: service_healthy}
+    command: taskmanager
+    environment:
+      <<: *common-env
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        parallelism.default: 1
+    volumes:
+      - flink-checkpoints:/tmp/flink-checkpoints
+    restart: unless-stopped
+
+  # One-shot real cluster submission via the Flink CLI. The old repo's submit_job.py
+  # ran an embedded mini-cluster instead, which is why its 8081 UI was always empty.
+  flink-submit:
+    build:
+      context: .
+      dockerfile: flink/Dockerfile
+    depends_on:
+      flink-jobmanager: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      enrichment: {condition: service_healthy}
+    environment:
+      <<: *common-env
+    command: >
+      flink run -d -m flink-jobmanager:8081
+      -py /opt/riskradar/job/news_job.py
+      -pyexec python3 -pyclientexec python3
+    restart: "no"
+
+volumes:
+  kafka-data:
+  redis-data:
+  dynamodb-data:
+  model-cache:
+  flink-checkpoints:

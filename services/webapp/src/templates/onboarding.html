@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Set up — RiskRadar{% endblock %}
+{% block content %}
+<div style="max-width:620px;margin:34px auto">
+
+  <div class="card">
+    <h2>1 · Which companies do you want watched?</h2>
+    <p class="sub">Pick at least one. You can change this any time.</p>
+    <div class="picker" id="picker">
+      {% for ticker, info in companies.items() %}
+        <label>
+          <input type="checkbox" value="{{ ticker }}"
+                 {% if ticker in watching %}checked{% endif %}>
+          {{ info.name }} <small style="color:var(--text-muted)">{{ ticker }}</small>
+        </label>
+      {% endfor %}
+    </div>
+    <p></p>
+    <button id="save-watchlist">Save watchlist</button>
+    <span id="watchlist-msg" class="note"></span>
+  </div>
+
+  <div class="card">
+    <h2>2 · Slack alerts <span class="note" style="font-weight:400">optional</span></h2>
+    <p class="sub">
+      Paste an <a href="https://api.slack.com/messaging/webhooks" target="_blank"
+      rel="noopener">incoming webhook</a> URL. Without one you'll still see every
+      alert in your dashboard.
+    </p>
+    <input id="slack-url" type="url" placeholder="https://hooks.slack.com/services/..."
+           value="{{ user.slack_webhook_url or '' }}">
+    <p></p>
+    <button id="save-slack" class="ghost">Save</button>
+    <button id="test-slack">Send test message</button>
+    <span id="slack-msg" class="note"></span>
+  </div>
+
+  <div class="card">
+    <h2>3 · You're set</h2>
+    <p class="sub">
+      Ingestion is already pulling live headlines. Risk scores update every few
+      minutes; alerts fire when a ticker moves well outside its own recent range.
+    </p>
+    <a class="btn" href="/dashboard">Go to dashboard</a>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/app.js"></script>
+<script>RiskRadar.initOnboarding();</script>
+{% endblock %}

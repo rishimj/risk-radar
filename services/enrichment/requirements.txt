@@ -1,0 +1,9 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+# Sentiment tier 1. CPU wheels only — no CUDA in this stack.
+torch==2.5.1
+transformers==4.47.1
+# Tier 2/3 fallbacks, tiny and pure-python.
+finvader==1.0.3
+vaderSentiment==3.3.2

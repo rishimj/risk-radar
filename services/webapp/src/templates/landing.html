@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}RiskRadar — streaming news risk for the Mag 7{% endblock %}
+{% block content %}
+
+<section class="hero">
+  <h1>Know when the news turns against a company you hold.</h1>
+  <p>
+    RiskRadar streams live financial headlines through a finance-tuned sentiment
+    model, scores rolling 15-minute risk windows per ticker in Apache Flink, and
+    pings your Slack when a company moves well outside its own normal range.
+  </p>
+  <a class="btn" href="/signup">Start watching</a>
+  <a class="btn ghost" href="/login">Sign in</a>
+
+  <div class="stat-row">
+    <div class="stat"><div class="v">~157</div><div class="k">fresh articles / hour</div></div>
+    <div class="stat"><div class="v">7</div><div class="k">Mag 7 tickers</div></div>
+    <div class="stat"><div class="v">15m</div><div class="k">sliding risk window</div></div>
+    <div class="stat"><div class="v">p99</div><div class="k">per-ticker alert cut</div></div>
+  </div>
+</section>
+
+<div class="grid">
+  <div class="card">
+    <h2>Live headlines</h2>
+    <p class="sub">Straight off the pipeline, scored as they arrive.</p>
+    <ul class="feed">
+      {% for h in headlines %}
+        <li>
+          {% set s = h.sentiment or 0 %}
+          <span class="chip {% if s <= -0.05 %}neg{% elif s >= 0.05 %}pos{% else %}neu{% endif %}">
+            <i></i>{% if s > 0 %}+{% endif %}{{ "%.2f"|format(s) }}
+          </span>
+          <div style="min-width:0">
+            <a href="{{ h.url }}" target="_blank" rel="noopener">{{ h.title }}</a>
+            <div class="meta">
+              {{ h.source }}
+              <span class="tickers">
+                {% for c in h.companies %}<span class="tk">{{ c.ticker }}</span>{% endfor %}
+              </span>
+            </div>
+          </div>
+        </li>
+      {% else %}
+        <li class="note">The pipeline is warming up — headlines appear within a couple of minutes.</li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>How it decides</h2>
+    <p class="sub">Why there's no magic threshold number.</p>
+    <p style="font-size:14px;color:var(--text-secondary)">
+      A fixed cut doesn't work. Replaying 672 real headlines, a 0.7 threshold
+      fired on <b>13.5%</b> of windows — a single mildly negative headline scores
+      0.81 — while averaging sentiment instead fired on <b>0%</b>. No constant
+      sits reliably between those.
+    </p>
+    <p style="font-size:14px;color:var(--text-secondary)">
+      So each ticker is judged against <b>its own</b> trailing 24 hours. A window
+      alerts when it lands in that ticker's top 1%. TSLA sees 11 articles an hour
+      and AAPL 32; they get different bars, automatically.
+    </p>
+    {% if alerts %}
+      <h2 style="margin-top:16px">Recent alerts</h2>
+      <table>
+        <tbody>
+        {% for a in alerts %}
+          <tr>
+            <td>{{ a.ticker }}{% if a.source == "simulated" %}
+              <span class="tag sim">simulated</span>{% endif %}</td>
+            <td class="num">{{ "%.3f"|format(a.risk_score|float) }}</td>
+            <td>{{ a.severity }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

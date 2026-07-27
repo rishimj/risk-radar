@@ -1,0 +1,36 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RiskRadarTables",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:CreateTable",
+        "dynamodb:DescribeTable",
+        "dynamodb:ListTables",
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:Query",
+        "dynamodb:BatchGetItem",
+        "dynamodb:BatchWriteItem"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:*:*:table/users",
+        "arn:aws:dynamodb:*:*:table/users/index/*",
+        "arn:aws:dynamodb:*:*:table/watchlists",
+        "arn:aws:dynamodb:*:*:table/watchlists/index/*",
+        "arn:aws:dynamodb:*:*:table/alerts",
+        "arn:aws:dynamodb:*:*:table/alerts/index/*",
+        "arn:aws:dynamodb:*:*:table/deliveries"
+      ]
+    },
+    {
+      "Sid": "RiskRadarSecrets",
+      "Effect": "Allow",
+      "Action": ["ssm:GetParameter", "ssm:GetParameters"],
+      "Resource": "arn:aws:ssm:*:*:parameter/riskradar/*"
+    }
+  ]
+}
