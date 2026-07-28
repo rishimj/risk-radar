@@ -37,6 +37,9 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_LOG_DIRS: /var/lib/kafka/data
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Default broker heap is 1g. This stack is a single broker carrying two
+      # 1-partition topics on a laptop; 512m is ample and leaves room for Flink.
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms256m"
     volumes:
       - kafka-data:/var/lib/kafka/data
     healthcheck:
@@ -67,7 +70,16 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes"]
+    # volatile-lru, NOT allkeys-lru: only keys carrying a TTL may be evicted.
+    # base:<TICKER> (the alert baselines), feat:<TICKER>:latest (what /api/risk
+    # serves) and recent:headlines have no TTL by design, and evicting any of
+    # them would silently degrade alerting rather than fail loudly. What stays
+    # evictable is seen:news:* (7d dedup, ~85% of all keys), the per-window
+    # feat:<TICKER>:<window_end> history, and alert:last_sent:* cooldowns —
+    # all of which self-heal. Steady state is roughly 25-50MB, so 256mb is
+    # ~5x headroom rather than a limit we expect to reach.
+    command: ["redis-server", "--appendonly", "yes",
+              "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
     ports:
       - "6379:6379"
     volumes:
@@ -82,7 +94,7 @@ services:
   dynamodb-local:
     image: amazon/dynamodb-local:latest
     # -dbPath with -sharedDb so data survives restarts and every client sees one namespace.
-    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-dbPath", "/data"]
+    command: ["-Xmx256m", "-jar", "DynamoDBLocal.jar", "-sharedDb", "-dbPath", "/data"]
     working_dir: /home/dynamodblocal
     user: root
     ports:
@@ -91,8 +103,13 @@ services:
       - dynamodb-data:/data
     restart: unless-stopped
 
+  # Browsing-only convenience; nothing in the pipeline depends on it. Assigned to
+  # the "tools" profile so it stays OFF by default — on a 16GB laptop this is the
+  # cheapest ~400MB to not spend. Start it explicitly when you want it:
+  #   docker compose --profile tools up -d kafka-ui
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
+    profiles: ["tools"]
     depends_on:
       kafka: {condition: service_healthy}
     ports:
@@ -101,6 +118,7 @@ services:
       KAFKA_CLUSTERS_0_NAME: riskradar
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
       DYNAMIC_CONFIG_ENABLED: "true"
+      JAVA_OPTS: "-Xmx256m"
     restart: unless-stopped
 
   enrichment:
@@ -183,6 +201,7 @@ services:
         rest.address: flink-jobmanager
         rest.bind-address: 0.0.0.0
         parallelism.default: 1
+        jobmanager.memory.process.size: 1024m
     volumes:
       - flink-checkpoints:/tmp/flink-checkpoints
     healthcheck:
@@ -202,10 +221,19 @@ services:
     command: taskmanager
     environment:
       <<: *common-env
+      # Slots were 4 while parallelism.default is 1, so three sat idle. Slots do
+      # not multiply process memory, but they do carve up managed memory and
+      # network buffers, which starves the one slot actually doing work.
+      #
+      # process.size caps the WHOLE container (heap + managed + network + JVM
+      # overhead), which matters here because PyFlink forks a Beam Python worker
+      # per slot on top of the JVM. Default is 1728m; 1400m plus the Python
+      # process still fits comfortably.
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jobmanager
-        taskmanager.numberOfTaskSlots: 4
+        taskmanager.numberOfTaskSlots: 2
         parallelism.default: 1
+        taskmanager.memory.process.size: 1400m
     volumes:
       - flink-checkpoints:/tmp/flink-checkpoints
     restart: unless-stopped

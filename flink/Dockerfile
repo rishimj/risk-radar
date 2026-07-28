@@ -3,8 +3,8 @@
 # and runs under Rosetta on an M-series Mac. On the x86_64 EC2 target it is native.
 #
 # 1.20.1 rather than 1.18: newest 1.x with the DataStream Python API intact (2.x
-# reworks it), and its wheels cover cp38-cp311, which matches this base image's
-# Debian bookworm python3.11.
+# reworks it), and its wheels cover cp38-cp311, which covers this base image's
+# Ubuntu 22.04 python3.10.
 FROM --platform=linux/amd64 flink:1.20.1-scala_2.12-java11
 
 USER root
@@ -21,7 +21,17 @@ ARG KAFKA_CONNECTOR=flink-sql-connector-kafka-3.3.0-1.20.jar
 RUN curl -fsSL -o /opt/flink/lib/${KAFKA_CONNECTOR} \
     https://repo1.maven.org/maven2/org/apache/flink/flink-sql-connector-kafka/3.3.0-1.20/${KAFKA_CONNECTOR}
 
-RUN pip3 install --no-cache-dir --break-system-packages \
+# The base image ships pip 22.0.2 / setuptools 59.6.0. Both must move before
+# anything else installs:
+#   - setuptools <61 cannot read pyproject.toml's PEP 621 [project] table, so
+#     `pip install /libs/core` builds an empty UNKNOWN-0.0.0 wheel and EXITS 0.
+#     The failure only surfaces later as ModuleNotFoundError: riskcore on the
+#     TaskManager, far from its cause.
+#   - No --break-system-packages anywhere here: it landed in pip 23, and
+#     Ubuntu 22.04 ships no PEP 668 marker, so it is both invalid and unneeded.
+RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
+
+RUN pip3 install --no-cache-dir \
       apache-flink==1.20.1 \
       redis>=5.0 \
       boto3>=1.34 \
@@ -31,8 +41,15 @@ RUN pip3 install --no-cache-dir --break-system-packages \
 # old repo ran stock flink images for JM/TM, so any Python UDF would have found
 # no domain code on the worker.
 COPY libs/core /libs/core
-RUN pip3 install --no-cache-dir --break-system-packages /libs/core
+RUN pip3 install --no-cache-dir /libs/core
 
 COPY flink/job /opt/riskradar/job
+
+# This image runs as root, but the base entrypoint gosu's down to `flink` before
+# starting the JVM. A named volume mounted here would otherwise be created
+# root-owned and the JobMaster could not mkdir inside it — checkpoint storage
+# creation fails and the job dies at env.execute(), never reaching RUNNING.
+# Creating it here with the right owner makes the volume inherit that ownership.
+RUN mkdir -p /tmp/flink-checkpoints && chown -R flink:flink /tmp/flink-checkpoints
 
 ENV PYTHONUNBUFFERED=1

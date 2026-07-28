@@ -1,0 +1,6 @@
+# Deps for the tools/ one-shots (seed_baseline, calibrate, replay), which ride
+# along in the webapp image. replay.local_scorer() tries FinBERT first and falls
+# back to VADER; torch is absent here by design (the 440MB pull belongs to the
+# enrichment service alone), so the VADER fallback is the path that actually
+# runs and its import must resolve.
+vaderSentiment==3.3.2

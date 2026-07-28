@@ -5,5 +5,5 @@ pydantic==2.10.4
 torch==2.5.1
 transformers==4.47.1
 # Tier 2/3 fallbacks, tiny and pure-python.
-finvader==1.0.3
+finvader==1.0.4
 vaderSentiment==3.3.2

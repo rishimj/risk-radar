@@ -1,0 +1,17 @@
+# Host build artifacts must not reach the image. A local `pip install -e libs/core`
+# leaves riskcore.egg-info/ behind with host absolute paths in it; copying that
+# into a build context invites stale-metadata surprises.
+.venv/
+venv/
+*.egg-info/
+__pycache__/
+*.pyc
+.pytest_cache/
+build/
+dist/
+.git/
+.env
+.DS_Store
+models/
+.coverage
+htmlcov/

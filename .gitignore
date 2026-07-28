@@ -11,3 +11,6 @@ dist/
 models/
 .coverage
 htmlcov/
+# Per-machine Claude Code permissions (absolute paths, personal grants).
+# .claude/settings.json IS committed; this local override is not.
+.claude/settings.local.json

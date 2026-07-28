@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir /libs/core
 COPY services/webapp/src /app/src
 # tools/ rides along so the seed-baseline one-shot can share this image.
 COPY tools /app/tools
+RUN pip install --no-cache-dir -r /app/tools/requirements.txt
 
 ENV PYTHONPATH=/app/src:/app/tools \
     PYTHONUNBUFFERED=1

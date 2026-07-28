@@ -394,9 +394,17 @@ def build_pipeline(env: StreamExecutionEnvironment) -> None:
         .uid("risk-window")
     )
 
+    # Alert BEFORE the baseline write, not after. FeatureWriter.record() folds
+    # this window's own risk score into the very distribution AlertFanout then
+    # compares it against — a window cannot be an outlier relative to a sample
+    # set it is already a member of. With a 900s/180s slide one spike emits 5
+    # overlapping max-risk windows, which was enough to drag p99 to exactly 1.0;
+    # since risk_score is capped at 1.0 and the test is a strict `>`, the ticker
+    # then became permanently unable to alert. Evaluating first compares against
+    # the trailing baseline, which is what "adaptive baseline" was meant to mean.
     (features
-        .map(FeatureWriter(), output_type=Types.STRING()).name("redis features").uid("features")
-        .map(AlertFanout(), output_type=Types.STRING()).name("alert fan-out").uid("alerts"))
+        .map(AlertFanout(), output_type=Types.STRING()).name("alert fan-out").uid("alerts")
+        .map(FeatureWriter(), output_type=Types.STRING()).name("redis features").uid("features"))
 
 
 def main() -> None:
