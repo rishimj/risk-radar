@@ -22,6 +22,7 @@ def recent(redis_client, limit: int = 50, ticker: Optional[str] = None,
            include_simulated: bool = True) -> List[Dict[str, Any]]:
     raw = redis_client.lrange(config.HEADLINES_KEY, 0, max(limit * 4, limit) - 1)
     out: List[Dict[str, Any]] = []
+    titles = set()      # syndicated stories arrive once per feed under different URLs
     for item in raw:
         if isinstance(item, bytes):
             item = item.decode()
@@ -36,6 +37,10 @@ def recent(redis_client, limit: int = 50, ticker: Optional[str] = None,
             tickers = [c.get("ticker") for c in doc.get("companies", [])]
             if ticker not in tickers:
                 continue
+        key = " ".join(str(doc.get("title", "")).lower().split())
+        if key in titles:
+            continue
+        titles.add(key)
         out.append(doc)
         if len(out) >= limit:
             break

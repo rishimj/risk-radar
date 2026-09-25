@@ -1,0 +1,12 @@
+<div class="picker" id="picker">
+  {% for ticker, info in companies.items() %}
+  <label class="pick">
+    <input type="checkbox" value="{{ ticker }}" {% if ticker in watching %}checked{% endif %}>
+    <span class="face">
+      <span class="logo" aria-hidden="true">{{ ticker[:4] }}</span>
+      <span><span class="nm">{{ info.name }}</span><br><span class="sy">{{ ticker }}</span></span>
+      <span class="check" aria-hidden="true">✓</span>
+    </span>
+  </label>
+  {% endfor %}
+</div>

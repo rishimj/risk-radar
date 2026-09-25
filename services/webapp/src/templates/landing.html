@@ -1,91 +1,331 @@
 {% extends "base.html" %}
-{% block title %}RiskRadar — streaming news risk for the Mag 7{% endblock %}
-{% block content %}
+{% set on_hero = True %}
+{% block title %}RiskRadar · Know when the news turns against a company you hold{% endblock %}
+{% block body_class %}landing{% endblock %}
+{% block body %}
+{% include "_nav.html" %}
 
+<main>
+<!-- ============================================================ hero -->
 <section class="hero">
-  <h1>Know when the news turns against a company you hold.</h1>
-  <p>
-    RiskRadar streams live financial headlines through a finance-tuned sentiment
-    model, scores rolling 15-minute risk windows per ticker in a stream processor, and
-    pings your Slack when a company moves well outside its own normal range.
-  </p>
-  {% if guest_demo %}
-  <form method="post" action="/demo" class="inline-form">
-    <button type="submit">Try the live demo</button>
-  </form>
-  <a class="btn ghost" href="/signup">Create an account</a>
-  <p class="note">The demo opens a temporary guest account, no email needed.
-    It is deleted after 48 hours.</p>
-  {% else %}
-  <a class="btn" href="/signup">Start watching</a>
-  <a class="btn ghost" href="/login">Sign in</a>
-  {% endif %}
+  <div class="hero-bg" aria-hidden="true">
+    <span class="blob b1"></span><span class="blob b2"></span>
+    <span class="blob b3"></span><span class="blob b4"></span>
+  </div>
+  <div class="hero-fade" aria-hidden="true"></div>
 
-  <div class="stat-row">
-    <div class="stat"><div class="v">~157</div><div class="k">fresh articles / hour</div></div>
-    <div class="stat"><div class="v">7</div><div class="k">Mag 7 tickers</div></div>
-    <div class="stat"><div class="v">15m</div><div class="k">sliding risk window</div></div>
-    <div class="stat"><div class="v">p99</div><div class="k">per-ticker alert cut</div></div>
+  <div class="wrap hero-grid">
+    <div>
+      <span class="eyebrow"><span class="pill">LIVE</span>
+        <span class="dot live" aria-hidden="true"></span> Streaming Magnificent 7 news right now</span>
+      <h1>Know when the news turns <span class="grad">against a company you hold.</span></h1>
+      <p class="lede">
+        RiskRadar reads financial headlines as they break, scores them with a
+        finance-tuned language model, and alerts you the moment a company moves
+        outside <em>its own</em> normal range. Not a fixed threshold. A baseline
+        that learns each ticker.
+      </p>
+      <div class="hero-cta">
+        {% if guest_demo %}
+        <form method="post" action="/demo" class="inline-form">
+          <button type="submit" class="dark">Try the live demo <span class="arrow">&rarr;</span></button>
+        </form>
+        {% endif %}
+        <a class="btn ghost" href="/signup">Create an account</a>
+      </div>
+      <p class="hero-note">No sign-up for the demo: a temporary guest account opens straight onto the dashboard.</p>
+    </div>
+
+    <div class="preview" aria-label="Live preview of three tickers">
+      <div class="preview-card">
+        <div class="preview-top">
+          <div class="preview-dots" aria-hidden="true"><i></i><i></i><i></i></div>
+          <div class="preview-title"><span class="dot live" aria-hidden="true"></span>Live risk · last 90 minutes</div>
+        </div>
+        <div id="preview-rows">
+          {% for t in ["TSLA", "NVDA", "AAPL", "META"] %}
+          <div class="mini-row" data-ticker="{{ t }}">
+            <div class="t">{{ t }}<small>loading…</small></div>
+            <div class="spark" aria-hidden="true"></div>
+            <div class="v">—<small>&nbsp;</small></div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% set live_alert = (alerts | selectattr("source", "ne", "simulated") | list | first) if alerts else None %}
+      <div class="toast" role="status">
+        <div class="ic" aria-hidden="true">!</div>
+        <div>
+          {% if live_alert %}
+          <b>{{ live_alert.ticker }} crossed its p{{ "%g"|format(percentile) }} baseline</b>
+          <span>score {{ "%.2f"|format((live_alert.alert_score or live_alert.risk_score)|float) }} vs cut {{ "%.2f"|format(live_alert.baseline_p|float) }} · real news</span>
+          {% else %}
+          <b>Alerts fire on the outliers</b>
+          <span>each ticker vs its own trailing 24 hours</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
   </div>
 </section>
 
-<div class="grid">
-  <div class="card">
-    <h2>Live headlines</h2>
-    <p class="sub">Straight off the pipeline, scored as they arrive.</p>
-    <ul class="feed">
-      {% for h in headlines %}
+<!-- ============================================================ stats -->
+<section class="section tight" aria-label="Pipeline counters">
+  <div class="wrap">
+    <div class="stats">
+      <div class="stat reveal"><div class="v"><span data-count="articles">0</span></div>
+        <div class="k">headlines scored by FinBERT</div><div class="bar"></div></div>
+      <div class="stat reveal d1"><div class="v"><span data-count="windows">0</span></div>
+        <div class="k">risk windows evaluated</div><div class="bar"></div></div>
+      <div class="stat reveal d2"><div class="v"><span data-count="baseline_samples">0</span></div>
+        <div class="k">baseline observations, trailing 24 h</div><div class="bar"></div></div>
+      <div class="stat reveal d3"><div class="v"><span data-count="alerts">0</span></div>
+        <div class="k">real alerts fired</div><div class="bar"></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ pipeline -->
+<section class="section" id="how">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <div class="kicker">How it works</div>
+      <h2>From a breaking headline to an alert in seconds.</h2>
+      <p class="sub">Every article flows through the same six stages. The web
+        app, the stream engine and the model run in one process on a small VM,
+        or as a Kafka and Apache Flink cluster, with the same code deciding
+        every outcome.</p>
+    </div>
+
+    <div class="pipeline-card reveal">
+      <div style="overflow-x:auto">
+      <svg class="pipeline-svg" viewBox="0 0 1045 190" role="img" aria-labelledby="pipe-t" style="min-width:760px">
+        <title id="pipe-t">Pipeline: news feeds, dedup and clamp, FinBERT, sliding windows, adaptive baseline, alerts</title>
+        <defs>
+          <linearGradient id="flowGrad" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0" stop-color="#635bff"/><stop offset="0.5" stop-color="#00d4ff"/><stop offset="1" stop-color="#ff5996"/>
+          </linearGradient>
+        </defs>
+        <path class="edge" d="M160 75 H1030"/>
+        <path class="flow" d="M160 75 H1030"/>
+        <circle class="packet" r="5"><animateMotion dur="4.2s" repeatCount="indefinite" path="M150 75 H900"/></circle>
+        <circle class="packet" r="5"><animateMotion dur="4.2s" begin="-1.4s" repeatCount="indefinite" path="M150 75 H900"/></circle>
+        <circle class="packet alt" r="5"><animateMotion dur="4.2s" begin="-2.8s" repeatCount="indefinite" path="M150 75 H900"/></circle>
+
+        {% set stages = [
+          ("RSS", "News feeds", "11 sources, every 2 min"),
+          ("NX", "Dedup", "SET NX, 7-day memory"),
+          ("AI", "FinBERT", "p(pos) − p(neg), [−1, 1]"),
+          ("15m", "Windows", "15 min, slide every 3"),
+          ("p" ~ ("%g"|format(percentile)), "Baseline", "trailing 24 h per ticker"),
+          ("!", "Alert", "cooldown, history, Slack"),
+        ] %}
+        {% for glyph, title, desc in stages %}
+        {% set x = 10 + loop.index0 * 175 %}
+        <g class="node{% if loop.index0 in (2, 4) %} hot{% endif %}" transform="translate({{ x }},38)">
+          <rect width="150" height="74" rx="12"/>
+          <rect class="icon" x="12" y="12" width="30" height="30" rx="8"/>
+          <text class="glyph" x="27" y="31.5" text-anchor="middle">{{ glyph }}</text>
+          <text class="title" x="52" y="31">{{ title }}</text>
+          <text class="desc" x="12" y="60">{{ desc }}</text>
+        </g>
+        {% endfor %}
+        <text class="axis-label" x="10" y="150">event time →</text>
+        <text class="axis-label" x="1035" y="150" text-anchor="end">watermark: max(published_at) − 30 s</text>
+      </svg>
+      </div>
+      <div class="pipeline-legend">
+        <div><b>Finance-tuned, not generic.</b>A generic model reads "murder" or
+          "jailed" as extreme market risk. FinBERT scores those near neutral and
+          reserves its negativity for guidance cuts, probes and downgrades.</div>
+        <div><b>Event time, done properly.</b>Windows are keyed on when a story was
+          <em>published</em>, not when it arrived, with bounded out-of-orderness
+          watermarks, so a slow feed can't smear a spike across windows.</div>
+        <div><b>Onset, not noise.</b>A 10-minute per-ticker cooldown and a
+          baseline that absorbs sustained spikes mean you hear about a crisis
+          when it starts, not every three minutes after.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ distribution -->
+<section class="section" id="decide" style="padding-top:0">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <div class="kicker">Why there's no threshold constant</div>
+      <h2>Every ticker is judged against its own history.</h2>
+      <p class="sub">A fixed cut can't work: replaying 672 real headlines, a 0.7
+        threshold fired on 13.5% of windows, while averaging sentiment fired on
+        none. So RiskRadar keeps each company's trailing 24-hour distribution
+        and alerts only on its top {{ "%g"|format(100 - percentile) }}%.</p>
+    </div>
+
+    <div class="split">
+      <div class="card reveal">
+        <div class="card-h">
+          <div>
+            <h3 id="dist-title">Tesla's baseline, live</h3>
+            <p class="card-sub" id="dist-sub">Distribution of alert scores over the last 24 hours</p>
+          </div>
+          <span class="badge accent" id="dist-badge">p{{ "%g"|format(percentile) }}</span>
+        </div>
+        <div class="chart-wrap" id="dist-chart" aria-describedby="dist-sub">
+          <p class="note">Loading the live distribution…</p>
+        </div>
+        <div class="chart-legend">
+          <span><i class="key-box"></i>windows in the last 24 h</span>
+          <span><i class="key-line"></i>alert cut (p{{ "%g"|format(percentile) }})</span>
+          <span><i class="key-dot"></i>latest window</span>
+        </div>
+      </div>
+
+      <div class="compare reveal d1">
+        <div class="row"><div><b>Fixed 0.7 threshold</b><span>one mildly negative headline scores 0.81</span></div><div class="big">13.5%<span class="note"> fire</span></div></div>
+        <div class="row"><div><b>Average sentiment</b><span>good and bad news cancel out</span></div><div class="big">0%<span class="note"> fire</span></div></div>
+        <div class="row win"><div><b>Per-ticker p{{ "%g"|format(percentile) }} baseline</b><span>calibrated on FinBERT: ~1 alert per ticker per day</span></div><div class="big">~1<span class="note">/day</span></div></div>
+        <p class="note" style="padding:4px 4px 0">TSLA sees ~11 articles an hour and AAPL ~32. They get different bars, automatically.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ tickers -->
+<section class="section" style="padding-top:0">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <div class="kicker">Live now</div>
+      <h2>Seven tickers, each with its own bar.</h2>
+      <p class="sub">The line is the alert score of each 15-minute window; the
+        rule is that ticker's current cut. Red points crossed it.</p>
+    </div>
+    <div class="tickers" id="landing-tickers" aria-live="polite"></div>
+  </div>
+</section>
+
+<!-- ============================================================ feed -->
+<section class="section" style="padding-top:0">
+  <div class="wrap two">
+    <div class="card reveal">
+      <div class="card-h"><div><h3>Straight off the pipeline</h3>
+        <p class="card-sub">Headlines that name a tracked company, as they were scored</p></div>
+        <span class="badge good"><span class="dot live" aria-hidden="true"></span>live</span></div>
+      <ul class="feed" style="margin-top:8px">
+        {% for h in headlines %}
+        {% set s = h.sentiment or 0 %}
         <li>
-          {% set s = h.sentiment or 0 %}
-          <span class="chip {% if s <= -0.05 %}neg{% elif s >= 0.05 %}pos{% else %}neu{% endif %}">
-            <i></i>{% if s > 0 %}+{% endif %}{{ "%.2f"|format(s) }}
-          </span>
+          <span class="chip {% if s <= -0.05 %}neg{% elif s >= 0.05 %}pos{% else %}neu{% endif %}"><i></i>{% if s > 0 %}+{% endif %}{{ "%.2f"|format(s) }}</span>
           <div style="min-width:0">
-            <a href="{{ h.url or '#' }}" target="_blank" rel="noopener noreferrer">{{ h.title }}</a>
-            <div class="meta">
-              {{ h.source }}
-              <span class="tickers">
-                {% for c in h.companies %}<span class="tk">{{ c.ticker }}</span>{% endfor %}
-              </span>
-            </div>
+            <a class="title" href="{{ h.url or '#' }}" target="_blank" rel="noopener noreferrer">{{ h.title }}</a>
+            <div class="meta">{{ h.source }}{% for c in h.companies %} <span class="tk">{{ c.ticker }}</span>{% endfor %}</div>
           </div>
         </li>
-      {% else %}
-        <li class="note">The pipeline is warming up — headlines appear within a couple of minutes.</li>
-      {% endfor %}
-    </ul>
-  </div>
-
-  <div class="card">
-    <h2>How it decides</h2>
-    <p class="sub">Why there's no magic threshold number.</p>
-    <p style="font-size:14px;color:var(--text-secondary)">
-      A fixed cut doesn't work. Replaying 672 real headlines, a 0.7 threshold
-      fired on <b>13.5%</b> of windows — a single mildly negative headline scores
-      0.81 — while averaging sentiment instead fired on <b>0%</b>. No constant
-      sits reliably between those.
-    </p>
-    <p style="font-size:14px;color:var(--text-secondary)">
-      So each ticker is judged against <b>its own</b> trailing 24 hours. A window
-      alerts when it lands in that ticker's top 1%. TSLA sees 11 articles an hour
-      and AAPL 32; they get different bars, automatically.
-    </p>
-    {% if alerts %}
-      <h2 style="margin-top:16px">Recent alerts</h2>
-      <table>
-        <tbody>
-        {% for a in alerts %}
-          <tr>
-            <td>{{ a.ticker }}{% if a.source == "simulated" %}
-              <span class="tag sim">simulated</span>{% endif %}</td>
-            <td class="num">{{ "%.3f"|format(a.risk_score|float) }}</td>
-            <td>{{ a.severity }}</td>
-          </tr>
+        {% else %}
+        <li class="note">The pipeline is warming up; headlines appear within a couple of minutes.</li>
         {% endfor %}
-        </tbody>
-      </table>
-    {% endif %}
-  </div>
-</div>
+      </ul>
+    </div>
 
+    <div class="card reveal d1">
+      <div class="card-h"><div><h3>Recent alerts</h3>
+        <p class="card-sub">Across all users, newest first</p></div></div>
+      {% if alerts %}
+      <ul class="timeline" style="margin-top:16px">
+        {% for a in alerts %}
+        <li>
+          <span class="node {{ a.severity }}{% if a.source == 'simulated' %} sim{% endif %}" aria-hidden="true"></span>
+          <div class="row1"><span class="sym">{{ a.ticker }}</span>
+            {% if a.source == "simulated" %}<span class="badge sim">simulated</span>
+            {% else %}<span class="badge crit"><span class="ico">▲</span>{{ a.severity }}</span>{% endif %}
+            <span class="when" data-ago="{{ a.fired_at }}"></span></div>
+          <div class="msg">score {{ "%.2f"|format((a.alert_score or a.risk_score)|float) }} vs baseline {{ "%.2f"|format(a.baseline_p|float) }}</div>
+          {% if a.top_headline %}<div class="foot">{{ a.top_headline[:110] }}</div>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <div class="empty"><div class="glyph">◎</div>No alerts yet. They fire only when a ticker leaves its own normal range.</div>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ engineering -->
+<section class="section navy" id="engineering">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <div class="kicker">Engineering</div>
+      <h2>Built like a production system, sized for a portfolio budget.</h2>
+      <p class="sub">The full stack is Kafka, Apache Flink, FinBERT, Redis and
+        DynamoDB. This demo runs the same domain code as one sandboxed process on
+        a shared 4 GB VM, next to another app, with room to spare.</p>
+    </div>
+    <div class="eng-grid reveal">
+      <div class="eng"><div class="icon">⇄</div><h3>Two interchangeable stream engines</h3>
+        <p>PyFlink on a cluster, or the identical topology in plain Python. Both call
+          one shared stage module, and the lite engine reimplements Flink's
+          watermark, lateness and sliding-window rules, pinned by tests.</p>
+        <div class="fact">flink ≈ 960 MB · lite ≈ 62 MB</div></div>
+      <div class="eng"><div class="icon">σ</div><h3>Adaptive per-ticker baselines</h3>
+        <p>A trailing distribution per company in a Redis sorted set. The alert score
+          is left uncapped so percentiles stay meaningful at the top, where a
+          capped score made every ticker unalertable.</p>
+        <div class="fact">alert ⇔ score &gt; p{{ "%g"|format(percentile) }}(ticker, 24 h)</div></div>
+      <div class="eng"><div class="icon">⛨</div><h3>Hardened for the open internet</h3>
+        <p>Per-IP and site-wide rate limits, CSRF and a strict CSP, http(s)-only feed
+          links, guest accounts that can't reach Slack, and a systemd sandbox with
+          memory and CPU ceilings.</p>
+        <div class="fact">systemd-analyze security → 3.0 OK</div></div>
+      <div class="eng"><div class="icon">✓</div><h3>Tested where it matters</h3>
+        <p>Event-time semantics, baseline maths, abuse limits and both storage
+          backends are pinned by tests. Running the two engines side by side
+          exposed a PyFlink bug that silently discarded event time.</p>
+        <div class="fact">340+ tests · SQLite + DynamoDB</div></div>
+    </div>
+
+    <div class="code reveal">
+      <div class="code-top"><i></i><i></i><i></i><span>libs/core/riskcore/stages.py</span></div>
+<pre><span class="k">def</span> <span class="f">evaluate_and_alert</span>(redis, store, feats):
+    <span class="c"># Judge the window against THIS ticker's trailing distribution,</span>
+    <span class="c"># before the window itself is folded into it.</span>
+    decision = store.<span class="f">evaluate</span>(feats.ticker, feats.alert_score, feats.total_mentions)
+    <span class="k">if not</span> decision.should_alert:
+        <span class="k">return</span> <span class="n">None</span>
+    <span class="k">if</span> alerting.<span class="f">in_cooldown</span>(redis, feats.ticker, simulated=feats.simulated):
+        <span class="k">return</span> <span class="n">None</span>                     <span class="c"># onset, not every slide after</span>
+    alert = alerting.<span class="f">build_alert</span>(feats, decision.threshold,
+                                 source=<span class="s">"simulated"</span> <span class="k">if</span> feats.simulated <span class="k">else</span> <span class="s">"live"</span>)
+    alerting.<span class="f">fan_out</span>(alert)              <span class="c"># history for every subscriber, Slack for verified hooks</span></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ CTA -->
+<section class="cta">
+  <div class="wrap reveal">
+    <div class="kicker">See it fire</div>
+    <h2>Inject a synthetic crisis and watch the alert land.</h2>
+    <p class="sub">The demo drops you on a live dashboard. Press one button, and ten
+      negative headlines flow through FinBERT, close a window and cross the baseline
+      in seconds.</p>
+    <div class="hero-cta">
+      {% if guest_demo %}
+      <form method="post" action="/demo" class="inline-form">
+        <button type="submit">Try the live demo <span class="arrow">&rarr;</span></button>
+      </form>
+      {% endif %}
+      <a class="btn ghost" href="https://github.com/rishimj/risk-radar" rel="noopener">Read the code</a>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <span><b style="color:var(--ink)">RiskRadar</b> · {{ stack_label }}</span>
+    <span>Built by <a href="https://github.com/rishimj" rel="noopener">Rishi Manimaran</a> ·
+      <a href="https://github.com/rishimj/risk-radar" rel="noopener">Source on GitHub</a></span>
+  </div>
+</footer>
 {% endblock %}
+{% block scripts %}<script src="/static/app.js" data-init="landing"></script>{% endblock %}

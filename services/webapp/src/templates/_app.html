@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block body_class %}in-app{% endblock %}
+{% block body %}
+<div class="app">
+  <aside class="side" aria-label="App navigation">
+    {% include "_brand.html" %}
+    <div class="side-sec">Monitor</div>
+    <a class="side-link{% if active == 'overview' %} on{% endif %}" href="/dashboard">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Overview</a>
+    <a class="side-link" href="/dashboard#alerts">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>Alerts</a>
+    <a class="side-link" href="/dashboard#headlines">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 10h16M4 15h10M4 20h7"/></svg>Headlines</a>
+    <div class="side-sec">Account</div>
+    <a class="side-link{% if active == 'settings' %} on{% endif %}" href="/settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Watchlist &amp; Slack</a>
+    <a class="side-link" href="https://github.com/rishimj/risk-radar" rel="noopener">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 18l6-6-6-6M8 6l-6 6 6 6"/></svg>Source code</a>
+    <div class="side-foot">
+      <div class="who">
+        <div class="avatar" aria-hidden="true">{{ "G" if user.is_guest else (user.email[:1] | upper) }}</div>
+        <div style="min-width:0">
+          <div class="n">{{ "Guest demo" if user.is_guest else user.email }}</div>
+          <div class="r">{{ "expires in 48 h" if user.is_guest else "account" }}</div>
+        </div>
+      </div>
+      <form method="post" action="/logout" class="inline-form"><button type="submit" class="linklike">Sign out</button></form>
+    </div>
+  </aside>
+  <div class="main">
+    <header class="topbar">
+      <h1>{% block page_title %}{% endblock %}</h1>
+      {% block topbar_right %}{% endblock %}
+    </header>
+    <div class="content">
+      {% block content %}{% endblock %}
+    </div>
+  </div>
+</div>
+{% endblock %}

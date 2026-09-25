@@ -95,9 +95,36 @@ def headline_row(doc: Dict) -> Dict:
     }
 
 
+# Recent windows per ticker, newest first, for the dashboard sparklines. A
+# capped list rather than a scan over feat:<ticker>:<window_end> keys, which
+# would be thousands of keys per poll.
+HISTORY_LEN = 96                       # 96 x 3-minute slides = 4.8 h
+
+
+def history_key(ticker: str) -> str:
+    return f"hist:{ticker}"
+
+
+def history_point(feats: RiskFeatures) -> str:
+    return json.dumps({
+        "t": feats.window_end, "r": feats.risk_score, "a": feats.alert_score,
+        "n": feats.total_mentions, "s": feats.sentiment_score,
+        "sim": bool(feats.simulated),
+    }, separators=(",", ":"))
+
+
+def bump(redis_client, counter: str, by: int = 1) -> None:
+    """Lifetime pipeline counters shown on the landing page. Never fatal."""
+    try:
+        redis_client.incrby(f"stats:{counter}", by)
+    except Exception:                                  # noqa: BLE001
+        pass
+
+
 def write_headline(redis_client, doc: Dict) -> None:
     from . import headlines
     headlines.push(redis_client, headline_row(doc))
+    bump(redis_client, "articles")
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +151,7 @@ def evaluate_and_alert(redis_client, store, feats: RiskFeatures) -> Optional[Ale
                                  source="simulated" if feats.simulated else "live")
     alerting.fan_out(alert)
     alerting.mark_sent(redis_client, feats.ticker, simulated=feats.simulated)
+    bump(redis_client, "alerts_simulated" if feats.simulated else "alerts")
     log.info("ALERT %s score=%.3f baseline=%.3f n=%d",
              feats.ticker, feats.alert_score, decision.threshold or 0.0,
              decision.samples)
@@ -137,6 +165,9 @@ def write_features(redis_client, store, feats: RiskFeatures) -> None:
     pipe = redis_client.pipeline()
     pipe.set(f"feat:{feats.ticker}:latest", payload)
     pipe.setex(f"feat:{feats.ticker}:{feats.window_end}", 7 * 86400, payload)
+    pipe.lpush(history_key(feats.ticker), history_point(feats))
+    pipe.ltrim(history_key(feats.ticker), 0, HISTORY_LEN - 1)
+    pipe.incr("stats:windows")
     pipe.execute()
 
     # Every REAL window feeds the baseline, including quiet ones — otherwise
