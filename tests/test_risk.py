@@ -93,13 +93,13 @@ def test_single_mildly_negative_headline_would_clear_the_old_threshold():
 def test_build_features_surfaces_most_negative_headline():
     ts = datetime(2026, 7, 27, 12, 0, tzinfo=timezone.utc)
     mentions = [
-        CompanyMention("TSLA", "a", "Tesla beats delivery estimates", "u1", "s", 0.6, "primary", 1),
-        CompanyMention("TSLA", "b", "Tesla recalls 400k vehicles", "u2", "s", -0.9, "primary", 2),
-        CompanyMention("TSLA", "c", "Tesla opens new plant", "u3", "s", 0.2, "primary", 3),
+        CompanyMention("TSLA", "a", "Tesla beats delivery estimates", "https://x/u1", "s", 0.6, "primary", 1),
+        CompanyMention("TSLA", "b", "Tesla recalls 400k vehicles", "https://x/u2", "s", -0.9, "primary", 2),
+        CompanyMention("TSLA", "c", "Tesla opens new plant", "https://x/u3", "s", 0.2, "primary", 3),
     ]
     feats = build_features("TSLA", mentions, ts, ts)
     assert feats.top_headline == "Tesla recalls 400k vehicles"
-    assert feats.top_url == "u2"
+    assert feats.top_url == "https://x/u2"
     assert feats.total_mentions == 3
     assert feats.neg_count == 1 and feats.pos_count == 2
 

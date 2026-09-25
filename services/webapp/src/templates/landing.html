@@ -6,11 +6,20 @@
   <h1>Know when the news turns against a company you hold.</h1>
   <p>
     RiskRadar streams live financial headlines through a finance-tuned sentiment
-    model, scores rolling 15-minute risk windows per ticker in Apache Flink, and
+    model, scores rolling 15-minute risk windows per ticker in a stream processor, and
     pings your Slack when a company moves well outside its own normal range.
   </p>
+  {% if guest_demo %}
+  <form method="post" action="/demo" class="inline-form">
+    <button type="submit">Try the live demo</button>
+  </form>
+  <a class="btn ghost" href="/signup">Create an account</a>
+  <p class="note">The demo opens a temporary guest account, no email needed.
+    It is deleted after 48 hours.</p>
+  {% else %}
   <a class="btn" href="/signup">Start watching</a>
   <a class="btn ghost" href="/login">Sign in</a>
+  {% endif %}
 
   <div class="stat-row">
     <div class="stat"><div class="v">~157</div><div class="k">fresh articles / hour</div></div>
@@ -32,7 +41,7 @@
             <i></i>{% if s > 0 %}+{% endif %}{{ "%.2f"|format(s) }}
           </span>
           <div style="min-width:0">
-            <a href="{{ h.url }}" target="_blank" rel="noopener">{{ h.title }}</a>
+            <a href="{{ h.url or '#' }}" target="_blank" rel="noopener noreferrer">{{ h.title }}</a>
             <div class="meta">
               {{ h.source }}
               <span class="tickers">

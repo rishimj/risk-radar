@@ -36,6 +36,17 @@ DYNAMO_ENDPOINT_URL = os.getenv("DYNAMO_ENDPOINT_URL") or None  # unset on AWS
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
+# "dynamodb" (default; DynamoDB Local or AWS) or "sqlite" (single-node deploy).
+DB_BACKEND = os.getenv("DB_BACKEND", "dynamodb").strip().lower()
+SQLITE_PATH = os.getenv("SQLITE_PATH", "riskradar.db")
+# Prepended to every table name. The test suite sets its own so it can never
+# truncate a running stack's tables, which share dynamodb-local's -sharedDb file.
+TABLE_PREFIX = os.getenv("TABLE_PREFIX", "")
+
+# "kafka" (default) or "inproc": the standalone runner swaps Kafka for an
+# in-process queue (see riskcore.kafka.set_local_sink).
+BUS = os.getenv("BUS", "kafka").strip().lower()
+
 TOPIC_RAW = os.getenv("TOPIC_RAW", "news.raw")
 TOPIC_ENRICHED = os.getenv("TOPIC_ENRICHED", "news.enriched")
 

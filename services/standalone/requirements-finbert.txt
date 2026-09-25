@@ -1,0 +1,6 @@
+# Optional sentiment tier 1: FinBERT. CPU-only torch wheels (the default index
+# pulls CUDA builds, ~2.5 GB of libraries a VM without a GPU never executes):
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch==2.5.1
+#   pip install -r services/standalone/requirements-finbert.txt
+# Adds roughly 600-700 MB RSS once the model is loaded.
+transformers==4.47.1

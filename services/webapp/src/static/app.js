@@ -5,6 +5,8 @@ const RiskRadar = (() => {
   "use strict";
 
   const $ = (sel) => document.querySelector(sel);
+  // Feed links are third-party data; only http(s) may become an href.
+  const safeUrl = (u) => (/^https?:\/\//i.test(String(u ?? "")) ? String(u) : "#");
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -44,11 +46,12 @@ const RiskRadar = (() => {
     const order = [["kafka", "Kafka"], ["flink", "Stream"], ["enrichment", "Enrichment"], ["redis", "Redis"]];
     $("#status").innerHTML = order.map(([key, label]) => {
       const s = data[key] || { ok: false, detail: "unknown" };
+      label = s.label || label;
       const cls = s.ok ? "ok" : "bad";
       const ico = s.ok ? "✓" : "✕";
       return `<span class="pill ${cls}" title="${esc(s.detail)}">
         <span class="dot"></span><span class="ico">${ico}</span>
-        <b>${label}</b> ${esc(s.detail)}</span>`;
+        <b>${esc(label)}</b> ${esc(s.detail)}</span>`;
     }).join("");
     $("#updated").textContent = `updated ${new Date().toLocaleTimeString()}`;
   }
@@ -86,7 +89,7 @@ const RiskRadar = (() => {
 
       const headline = r.top_headline
         ? (r.top_url
-            ? `<a class="headline" href="${esc(r.top_url)}" target="_blank" rel="noopener">${esc(r.top_headline)}</a>`
+            ? `<a class="headline" href="${esc(safeUrl(r.top_url))}" target="_blank" rel="noopener noreferrer">${esc(r.top_headline)}</a>`
             : `<span class="headline">${esc(r.top_headline)}</span>`)
         : `<span class="headline"></span>`;
 
@@ -132,7 +135,7 @@ const RiskRadar = (() => {
       <li>
         ${chip(h.sentiment)}
         <div style="min-width:0">
-          <a href="${esc(h.url)}" target="_blank" rel="noopener">${esc(h.title)}</a>
+          <a href="${esc(safeUrl(h.url))}" target="_blank" rel="noopener noreferrer">${esc(h.title)}</a>
           <div class="meta">
             ${esc(h.source || "")} · ${ago(h.published_at)}
             <span class="tickers">${(h.companies || [])
@@ -238,6 +241,8 @@ const RiskRadar = (() => {
       return res;
     };
 
+    if (!$("#save-slack")) return;                 // guest accounts have no Slack card
+
     $("#save-slack").addEventListener("click", async () => {
       const msg = $("#slack-msg");
       try { const r = await saveSlack();
@@ -258,5 +263,13 @@ const RiskRadar = (() => {
     });
   }
 
-  return { initDashboard, initOnboarding };
+  const api_ = { initDashboard, initOnboarding };
+
+  // Pages select their entry point with <script data-init="...">: the CSP
+  // allows no inline script, so there is nowhere else to call it from.
+  const init = document.currentScript && document.currentScript.dataset.init;
+  if (init === "dashboard") initDashboard();
+  else if (init === "onboarding") initOnboarding();
+
+  return api_;
 })();

@@ -1,9 +1,10 @@
 """Shared fixtures.
 
-DynamoDB-backed tests run against a real **DynamoDB Local** if one is reachable
-(the same image compose runs), and skip otherwise — so `make test` still works
-on a laptop with nothing running, and `make test` inside the stack exercises the
-genuine boto3 path rather than a mock.
+Table-backed tests run twice: against the SQLite backend (always), and against
+a real **DynamoDB Local** if one is reachable (the same image compose runs). So
+`make test` works on a laptop with nothing running, and inside the stack also
+exercises the genuine boto3 path. Test tables carry the rrtest_ prefix, so a
+running stack's data is never touched.
 
 Start one locally with:
     docker compose up -d dynamodb-local
@@ -79,13 +80,26 @@ def _reachable(url: str, timeout: float = 1.0) -> bool:
 DDB_AVAILABLE = _reachable(DDB_ENDPOINT)
 
 
-@pytest.fixture
-def dynamo():
-    """All four tables, emptied between tests so cases stay independent."""
-    if not DDB_AVAILABLE:
-        pytest.skip(f"no DynamoDB Local at {DDB_ENDPOINT} (run: docker compose up -d dynamodb-local)")
+# Tests touch ONLY tables carrying this prefix. dynamodb-local runs with
+# -sharedDb, which ignores the access key, so without a prefix `pytest` against
+# a running stack truncated the app's real users/watchlists/alerts.
+TEST_TABLE_PREFIX = "rrtest_"
 
-    from riskcore import db
+
+@pytest.fixture(params=["sqlite", "dynamodb"])
+def dynamo(request, tmp_path, monkeypatch):
+    """All four tables on each backend, emptied between tests.
+
+    SQLite always runs (a fresh file per test); DynamoDB Local runs when reachable.
+    """
+    from riskcore import config, db
+
+    monkeypatch.setattr(config, "TABLE_PREFIX", TEST_TABLE_PREFIX)
+    monkeypatch.setattr(config, "DB_BACKEND", request.param)
+    if request.param == "sqlite":
+        monkeypatch.setattr(config, "SQLITE_PATH", str(tmp_path / "test.db"))
+    elif not DDB_AVAILABLE:
+        pytest.skip(f"no DynamoDB Local at {DDB_ENDPOINT} (run: docker compose up -d dynamodb-local)")
 
     db._resource = None
     db.ensure_tables()

@@ -5,6 +5,8 @@ from typing import Dict, List, Optional
 import json
 import logging
 import os
+import re
+import threading
 import time
 
 import redis
@@ -13,7 +15,7 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from riskcore import alerting, config, db, headlines
 from riskcore.baseline import BaselineStore
@@ -21,6 +23,7 @@ from riskcore.entities import COMPANIES
 from riskcore.models import Alert, iso, utcnow
 
 import auth
+import guard
 import simulate as simulate_mod
 import store
 
@@ -38,6 +41,26 @@ baselines = BaselineStore(rds)
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "").lower() in {"1", "true", "yes"}
 FLINK_URL = os.getenv("FLINK_URL", "http://flink-jobmanager:8081")
 PROCESSOR_URL = os.getenv("PROCESSOR_URL", "http://processor:8083")
+ENABLE_API_DOCS = os.getenv("ENABLE_API_DOCS", "").lower() in {"1", "true", "yes"}
+GUEST_DEMO = os.getenv("GUEST_DEMO", "true").lower() in {"1", "true", "yes"}
+GUEST_MAX_AGE_HOURS = int(os.getenv("GUEST_MAX_AGE_HOURS", "48"))
+# One simulation site-wide per window. Each run stamps watermark filler ~4 min
+# ahead, so overlapping runs would land in windows that cannot close yet.
+SIMULATE_GLOBAL_SECONDS = int(os.getenv("SIMULATE_GLOBAL_SECONDS", "240"))
+STATUS_CACHE_SECONDS = float(os.getenv("STATUS_CACHE_SECONDS", "5"))
+
+# Filled in by services/standalone, whose Kafka/stream/enrichment stages are
+# in-process rather than services to probe over the network.
+status_providers: Dict[str, object] = {}
+status_labels: Dict[str, str] = {}
+templates.env.globals["stack_label"] = os.getenv(
+    "STACK_LABEL", "Kafka · PyFlink · FinBERT · Redis · DynamoDB")
+templates.env.globals["guest_demo"] = GUEST_DEMO
+
+_EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]+\.[^@\s]{2,}$")
+# A real bcrypt hash of nothing, verified against when the email is unknown so a
+# failed login costs the same time whether or not the account exists.
+_DUMMY_HASH = auth.hash_password("timing-equaliser")
 
 
 @asynccontextmanager
@@ -49,11 +72,32 @@ async def lifespan(app: FastAPI):
         except Exception as exc:                       # noqa: BLE001
             log.warning("waiting for dynamodb (%d/10): %s", attempt + 1, exc)
             time.sleep(3)
+    try:
+        store.purge_guests(GUEST_MAX_AGE_HOURS)
+    except Exception as exc:                           # noqa: BLE001
+        log.warning("guest purge failed: %s", exc)
     yield
 
 
-app = FastAPI(title="RiskRadar", version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title="RiskRadar", version="0.1.0", lifespan=lifespan,
+    # The interactive docs are a free map of every endpoint for scanners.
+    docs_url="/docs" if ENABLE_API_DOCS else None,
+    redoc_url=None,
+    openapi_url="/openapi.json" if ENABLE_API_DOCS else None,
+)
+app.add_middleware(guard.GuardMiddleware, redis_getter=lambda: rds)
 app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
+
+
+def _limited(limit: "guard.Limit", subject: str) -> Optional[int]:
+    """Count one event; returns retry-after seconds when over the limit."""
+    ok, retry = guard.hit(rds, limit, subject)
+    return None if ok else retry
+
+
+def _wait_msg(seconds: int) -> str:
+    return f"Too many attempts. Try again in {max(1, round(seconds / 60))} min."
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +124,9 @@ def landing(request: Request):
     if user:
         return RedirectResponse("/dashboard", status_code=303)
     return templates.TemplateResponse(request, "landing.html", {
-        "headlines": headlines.recent(rds, limit=12),
+        # The public page shows real news only; visitors' simulations stay on
+        # their dashboards instead of crowding it out.
+        "headlines": headlines.recent(rds, limit=12, include_simulated=False),
         "alerts": store.recent_alerts(limit=5),
     })
 
@@ -92,12 +138,25 @@ def signup_page(request: Request):
 
 
 @app.post("/signup")
-def signup(request: Request, email: str = Form(...), password: str = Form(...)):
+def signup(request: Request, email: str = Form(..., max_length=254),
+           password: str = Form(..., max_length=128)):
+    def fail(msg: str, status: int = 400):
+        return templates.TemplateResponse(request, "signup.html", {"error": msg},
+                                          status_code=status)
+
     email = email.strip().lower()
+    if not _EMAIL.match(email) or email.endswith("@" + store.GUEST_DOMAIN):
+        return fail("Enter a valid email address.")
     if len(password) < 8:
-        return templates.TemplateResponse(request, "signup.html", {
-        "error": "Password must be at least 8 characters."
-        }, status_code=400)
+        return fail("Password must be at least 8 characters.")
+
+    retry = _limited(guard.SIGNUP_PER_IP, guard.client_ip(request))
+    if retry:
+        return fail(_wait_msg(retry), 429)
+    retry = _limited(guard.ACCOUNTS_PER_DAY, "all")
+    if retry:
+        return fail("Sign-ups are paused for today. Try the guest demo instead.", 429)
+
     if store.user_by_email(email):
         return templates.TemplateResponse(request, "signup.html", {
         "error": "That email is already registered."
@@ -116,13 +175,39 @@ def login_page(request: Request):
 
 
 @app.post("/login")
-def login(request: Request, email: str = Form(...), password: str = Form(...)):
-    user = store.user_by_email(email)
+def login(request: Request, email: str = Form(..., max_length=254),
+          password: str = Form(..., max_length=128)):
+    email = email.strip().lower()
+    retry = (_limited(guard.LOGIN_PER_IP, guard.client_ip(request))
+             or _limited(guard.LOGIN_PER_EMAIL, email))
+    if retry:
+        return templates.TemplateResponse(request, "login.html", {
+            "error": _wait_msg(retry)}, status_code=429)
+
+    user = store.user_by_email(email) if _EMAIL.match(email) else None
+    if user is None:
+        auth.verify_password(password, _DUMMY_HASH)    # equalise timing
     if not user or not auth.verify_password(password, user.get("password_hash", "")):
         return templates.TemplateResponse(request, "login.html", {
         "error": "Incorrect email or password."
         }, status_code=401)
 
+    response = RedirectResponse("/dashboard", status_code=303)
+    auth.set_session_cookie(response, user["user_id"], secure=COOKIE_SECURE)
+    return response
+
+
+@app.post("/demo")
+def guest_demo(request: Request):
+    """One-click guest account, pre-watching a few tickers. No email, no password."""
+    if not GUEST_DEMO:
+        raise HTTPException(404)
+    retry = (_limited(guard.GUEST_PER_IP, guard.client_ip(request))
+             or _limited(guard.ACCOUNTS_PER_DAY, "all"))
+    if retry:
+        return templates.TemplateResponse(request, "login.html", {
+            "error": "The guest demo is busy right now. Try again later."}, status_code=429)
+    user = store.create_guest()
     response = RedirectResponse("/dashboard", status_code=303)
     auth.set_session_cookie(response, user["user_id"], secure=COOKIE_SECURE)
     return response
@@ -207,7 +292,7 @@ def api_risk(request: Request):
             "window_end": feats.get("window_end") if feats else None,
             "top_headline": feats.get("top_headline") if feats else "",
             "top_url": feats.get("top_url") if feats else "",
-            "baseline": threshold,
+            "baseline": round(threshold, 3) if threshold is not None else None,
             "baseline_samples": samples,
             "baseline_ready": threshold is not None,
             "min_samples": baselines.min_samples,
@@ -221,9 +306,26 @@ def api_alerts(request: Request, limit: int = 25):
     return {"alerts": store.alerts_for_user(user["user_id"], limit=limit)}
 
 
+_status_cache = {"at": 0.0, "value": None}
+_status_lock = threading.Lock()
+
+
 @app.get("/api/status")
 def api_status():
-    """Health of each dependency, for the dashboard pills."""
+    """Health of each dependency, for the dashboard pills.
+
+    Cached for STATUS_CACHE_SECONDS: every open dashboard polls this, and each
+    uncached call opens a Kafka admin connection and three HTTP probes.
+    """
+    with _status_lock:
+        now = time.monotonic()
+        if _status_cache["value"] is None or now - _status_cache["at"] > STATUS_CACHE_SECONDS:
+            _status_cache["value"] = _compute_status()
+            _status_cache["at"] = now
+        return _status_cache["value"]
+
+
+def _compute_status():
     def probe(fn):
         try:
             return {"ok": True, "detail": fn()}
@@ -274,16 +376,21 @@ def api_status():
         rds.ping()
         return "connected"
 
-    return {
-        "kafka": probe(kafka_detail),
-        "flink": probe(stream_detail),
-        "enrichment": probe(enrichment_detail),
-        "redis": probe(redis_detail),
+    checks = {
+        "kafka": kafka_detail,
+        "flink": stream_detail,
+        "enrichment": enrichment_detail,
+        "redis": redis_detail,
     }
+    checks.update(status_providers)
+    out = {name: probe(fn) for name, fn in checks.items()}
+    for name, label in status_labels.items():
+        out.setdefault(name, {})["label"] = label
+    return out
 
 
 class WatchlistIn(BaseModel):
-    tickers: List[str]
+    tickers: List[str] = Field(max_length=len(COMPANIES))
 
 
 @app.post("/api/watchlist")
@@ -296,15 +403,30 @@ def api_watchlist(request: Request, body: WatchlistIn):
 
 
 class SlackIn(BaseModel):
-    webhook_url: str
+    webhook_url: str = Field(max_length=300)
+
+
+# services/<team>/<channel>/<token>, alphanumeric segments only.
+_SLACK_HOOK = re.compile(r"^https://hooks\.slack\.com/services/[A-Za-z0-9]+/[A-Za-z0-9]+/[A-Za-z0-9]+$")
+
+
+def _no_guests(user: Dict) -> None:
+    if user.get("is_guest"):
+        raise HTTPException(403, "Guest demo accounts can't connect Slack. "
+                                 "Create a free account to try it.")
 
 
 @app.post("/api/slack")
 def api_slack(request: Request, body: SlackIn):
     """Save a webhook. Verification is a separate, explicit action."""
     user = require_user(request)
+    _no_guests(user)
+    if _limited(guard.SLACK_SAVE_PER_USER, user["user_id"]):
+        raise HTTPException(429, "Too many changes. Try again later.")
     url = body.webhook_url.strip()
-    if url and not url.startswith("https://hooks.slack.com/"):
+    # Exact host and path shape: this URL is the one thing a user can make the
+    # server send requests to, so it may only ever point at Slack.
+    if url and not _SLACK_HOOK.match(url):
         raise HTTPException(400, "That doesn't look like a Slack incoming-webhook URL.")
     store.set_slack_webhook(user["user_id"], url, verified=False)
     alerting.invalidate_subscriber_cache()
@@ -314,9 +436,14 @@ def api_slack(request: Request, body: SlackIn):
 @app.post("/api/slack/test")
 def api_slack_test(request: Request):
     user = require_user(request)
+    _no_guests(user)
     url = (user.get("slack_webhook_url") or "").strip()
     if not url:
         raise HTTPException(400, "No Slack webhook saved yet.")
+    if not _SLACK_HOOK.match(url):
+        raise HTTPException(400, "Saved webhook is not a Slack incoming-webhook URL.")
+    if _limited(guard.SLACK_TEST_PER_USER, user["user_id"]):
+        raise HTTPException(429, "Too many test messages. Try again later.")
 
     probe = Alert(
         alert_id="test", ticker="TSLA", risk_score=0.91, baseline_p=0.42,
@@ -333,7 +460,7 @@ def api_slack_test(request: Request):
 
 
 class SimulateIn(BaseModel):
-    ticker: str
+    ticker: str = Field(max_length=10)
 
 
 @app.post("/api/simulate")
@@ -347,14 +474,21 @@ def api_simulate(request: Request, body: SimulateIn):
     rate_key = f"simulate:rate:{user['user_id']}"
     if not rds.set(rate_key, "1", nx=True, ex=60):
         raise HTTPException(429, "One simulation per minute. Try again shortly.")
+    if _limited(guard.SIMULATE_PER_IP, guard.client_ip(request)):
+        raise HTTPException(429, "Simulation limit reached. Try again later.")
+    if SIMULATE_GLOBAL_SECONDS > 0 and not rds.set(
+            "simulate:global", "1", nx=True, ex=SIMULATE_GLOBAL_SECONDS):
+        wait = max(1, rds.ttl("simulate:global") or SIMULATE_GLOBAL_SECONDS)
+        raise HTTPException(429, f"Someone just ran a simulation. The next one is "
+                                 f"available in {wait}s, so their windows can close.")
 
     try:
         result = simulate_mod.run(rds, ticker)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    except Exception as exc:                           # noqa: BLE001
+    except Exception:                                  # noqa: BLE001
         log.exception("simulate failed")
-        raise HTTPException(500, f"Simulation failed: {exc}")
+        raise HTTPException(500, "Simulation failed. Please try again later.")
 
     return result
 

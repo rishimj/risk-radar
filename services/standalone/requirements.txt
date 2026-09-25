@@ -1,0 +1,14 @@
+# Single-node runtime (services/standalone). Install with the shared library:
+#   pip install -r services/standalone/requirements.txt ./libs/core
+# Web
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+jinja2==3.1.5
+python-multipart==0.0.20
+bcrypt==4.2.1
+itsdangerous==2.2.0
+# Sentiment fallbacks (tiny, pure Python). FinBERT is optional, see
+# requirements-finbert.txt; without it the ladder uses FinVADER.
+finvader==1.0.4
+vaderSentiment==3.3.2

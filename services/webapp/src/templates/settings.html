@@ -20,6 +20,13 @@
     <span id="watchlist-msg" class="note"></span>
   </div>
 
+  {% if user.is_guest %}
+  <div class="card">
+    <h2>Slack</h2>
+    <p class="sub">Guest demo accounts can't connect Slack.
+      <a href="/signup">Create a free account</a> to get alerts in your workspace.</p>
+  </div>
+  {% else %}
   <div class="card">
     <h2>Slack</h2>
     <p class="sub">
@@ -36,10 +43,12 @@
     <button id="test-slack">Send test message</button>
     <span id="slack-msg" class="note"></span>
   </div>
+  {% endif %}
 
   <div class="card">
     <h2>Account</h2>
-    <p class="sub">{{ user.email }}</p>
+    <p class="sub">{% if user.is_guest %}Guest demo account, deleted after 48 hours.
+      {% else %}{{ user.email }}{% endif %}</p>
     <a class="btn ghost" href="/logout">Sign out</a>
   </div>
 
@@ -47,6 +56,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/app.js"></script>
-<script>RiskRadar.initOnboarding();</script>
+<script src="/static/app.js" data-init="onboarding"></script>
 {% endblock %}

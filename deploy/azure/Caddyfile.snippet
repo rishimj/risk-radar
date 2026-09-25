@@ -1,0 +1,14 @@
+
+# ---- RiskRadar (appended by deploy/azure/install.sh) ----
+__SITE_HOST__ {
+	encode gzip
+	request_body {
+		max_size 64KB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	reverse_proxy 127.0.0.1:3001
+}
+# ---- end RiskRadar ----

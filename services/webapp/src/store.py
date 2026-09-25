@@ -14,7 +14,12 @@ log = logging.getLogger("store")
 # ---------------------------------------------------------------------------
 # users
 # ---------------------------------------------------------------------------
-def create_user(email: str, password_hash: str) -> Dict:
+# Guest demo accounts live under a reserved domain nobody can sign up with.
+GUEST_DOMAIN = "guest.riskradar.invalid"
+GUEST_WATCHLIST = ["AAPL", "NVDA", "TSLA"]
+
+
+def create_user(email: str, password_hash: str, guest: bool = False) -> Dict:
     user = {
         "user_id": uuid.uuid4().hex,
         "email": email.strip().lower(),
@@ -22,9 +27,47 @@ def create_user(email: str, password_hash: str) -> Dict:
         "created_at": iso(utcnow()),
         "slack_webhook_url": "",
         "slack_verified_at": "",
+        "is_guest": guest,
     }
     db.table("users").put_item(Item=user)
     return user
+
+
+def create_guest() -> Dict:
+    """A throwaway account with no password, so recruiters can try it in one click.
+
+    The password hash is deliberately not a bcrypt string, so verify_password
+    always fails: a guest session can only come from the cookie issued here.
+    """
+    uid = uuid.uuid4().hex[:12]
+    user = create_user(f"guest-{uid}@{GUEST_DOMAIN}", "!guest-no-password", guest=True)
+    set_watchlist(user["user_id"], GUEST_WATCHLIST)
+    return user
+
+
+def purge_guests(max_age_hours: int = 48) -> int:
+    """Delete guest accounts (and their watchlists) older than max_age_hours."""
+    from datetime import timedelta
+    cutoff = iso(utcnow() - timedelta(hours=max_age_hours))
+    users = db.table("users")
+    removed = 0
+    items, kwargs = [], {}
+    while True:                                        # DynamoDB pages scans at 1 MB
+        resp = users.scan(**kwargs)
+        items.extend(resp.get("Items", []))
+        if "LastEvaluatedKey" not in resp:
+            break
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+    for item in items:
+        if not item.get("is_guest") or item.get("created_at", "") >= cutoff:
+            continue
+        for ticker in watchlist(item["user_id"]):
+            db.table("watchlists").delete_item(Key={"user_id": item["user_id"], "ticker": ticker})
+        users.delete_item(Key={"user_id": item["user_id"]})
+        removed += 1
+    if removed:
+        log.info("purged %d guest accounts older than %dh", removed, max_age_hours)
+    return removed
 
 
 def user_by_email(email: str) -> Optional[Dict]:

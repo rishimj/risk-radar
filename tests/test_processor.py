@@ -23,11 +23,12 @@ T0 = datetime(2026, 7, 27, 12, 0, tzinfo=timezone.utc)
 SIZE, SLIDE, DELAY = 900_000, 180_000, 30_000
 
 
-def raw(minutes: float, ticker: str = "TSLA", sentiment: float = -0.5, aid: str = None) -> str:
+def raw(minutes: float, ticker: str = "TSLA", sentiment: float = -0.5, aid: str = None,
+        source: str = "t") -> str:
     aid = aid or f"{ticker}-{minutes}"
     return NewsArticle(
         article_id=aid, title=f"{ticker}|{sentiment}", url=f"https://x/{aid}",
-        source="t", published_at=iso(T0 + timedelta(minutes=minutes)),
+        source=source, published_at=iso(T0 + timedelta(minutes=minutes)),
     ).to_json()
 
 
@@ -277,11 +278,15 @@ def test_simulated_crisis_alerts_end_to_end_through_the_engine(monkeypatch):
 
     h = Harness(batch_size=5)
     h.engine._on_window = engine_mod.window_sink(r, store)
-    crisis = [raw(0, "TSLA", -0.926, aid=f"c{i}") for i in range(10)]
+    from riskcore.models import SIMULATED_SOURCE
+    crisis = [raw(0, "TSLA", -0.926, aid=f"c{i}", source=SIMULATED_SOURCE) for i in range(10)]
     filler_min = (SLIDE + DELAY) / 60_000 + 0.5
-    filler = [raw(filler_min, "AAPL", 0.1, aid=f"f{i}") for i in range(5)]
+    filler = [raw(filler_min, "AAPL", 0.1, aid=f"f{i}", source=SIMULATED_SOURCE)
+              for i in range(5)]
     h.feed(*crisis)
     h.feed(*filler)
 
     assert len(fired) == 1                             # cooldown collapses the 5 windows
     assert fired[0].ticker == "TSLA" and fired[0].risk_score == 1.0
+    assert fired[0].source == "simulated"
+    assert store.sample_count("TSLA") == 223           # simulated windows not recorded

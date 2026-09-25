@@ -1,7 +1,13 @@
-"""DynamoDB access.
+"""Table access: DynamoDB, or SQLite for the single-node deployment.
 
-The ONLY difference between local and AWS is DYNAMO_ENDPOINT_URL: set it and
-boto3 talks to dynamodb-local, unset it and boto3 uses the EC2 instance role.
+DB_BACKEND=dynamodb (default): the ONLY difference between local and AWS is
+DYNAMO_ENDPOINT_URL. Set it and boto3 talks to dynamodb-local; unset it and
+boto3 uses the EC2 instance role.
+
+DB_BACKEND=sqlite: riskcore.sqlitedb, a file-backed stand-in for the handful of
+Table calls this codebase makes. No JVM, no credentials, no bill.
+
+TABLE_PREFIX is prepended to every physical table name, on both backends.
 """
 from typing import Any, Dict, List, Optional
 import logging
@@ -96,12 +102,28 @@ def resource():
     return _resource
 
 
+def _physical(name: str) -> str:
+    return f"{config.TABLE_PREFIX}{name}"
+
+
+def _sqlite():
+    from . import sqlitedb
+    return sqlitedb.database(config.SQLITE_PATH)
+
+
 def table(name: str):
-    return resource().Table(name)
+    if config.DB_BACKEND == "sqlite":
+        return _sqlite().table(_physical(name), TABLES[name])
+    return resource().Table(_physical(name))
 
 
 def ensure_tables() -> List[str]:
     """Idempotently create all four tables. Safe to call from every container."""
+    if config.DB_BACKEND == "sqlite":
+        sq = _sqlite()
+        return [name for name, spec in TABLES.items()
+                if sq.create_table(_physical(name), spec)]
+
     created = []
     client = resource().meta.client
     existing = set()
@@ -111,6 +133,7 @@ def ensure_tables() -> List[str]:
         log.warning("could not list tables: %s", exc)
 
     for name, spec in TABLES.items():
+        name = _physical(name)
         if name in existing:
             continue
         params = dict(spec)

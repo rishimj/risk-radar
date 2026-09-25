@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from .models import CompanyMention, RiskFeatures, iso, parse_iso
+from .models import SIMULATED_SOURCE, CompanyMention, RiskFeatures, iso, parse_iso, safe_url
 
 
 @dataclass
@@ -103,7 +103,7 @@ def explode_mentions(doc: Dict[str, Any]) -> List[CompanyMention]:
             ticker=ticker,
             article_id=doc.get("article_id", ""),
             title=doc.get("title", ""),
-            url=doc.get("url", ""),
+            url=safe_url(doc.get("url", "")),
             source=doc.get("source", ""),
             sentiment=float(doc.get("sentiment", 0.0) or 0.0),
             role=company.get("role", "mentioned"),
@@ -150,7 +150,8 @@ def build_features(
         pos_count=agg.pos_count,
         total_mentions=len(mentions),
         top_headline=top.title if top else "",
-        top_url=top.url if top else "",
+        top_url=safe_url(top.url) if top else "",
+        simulated=any(m.source == SIMULATED_SOURCE for m in mentions),
     )
 
 

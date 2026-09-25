@@ -120,7 +120,8 @@ def evaluate_and_alert(redis_client, store, feats: RiskFeatures) -> Optional[Ale
         log.info("%s over baseline but in cooldown", feats.ticker)
         return None
 
-    alert = alerting.build_alert(feats, decision.threshold or 0.0)
+    alert = alerting.build_alert(feats, decision.threshold or 0.0,
+                                 source="simulated" if feats.simulated else "live")
     alerting.fan_out(alert)
     alerting.mark_sent(redis_client, feats.ticker)
     log.info("ALERT %s score=%.3f baseline=%.3f n=%d",
@@ -138,7 +139,10 @@ def write_features(redis_client, store, feats: RiskFeatures) -> None:
     pipe.setex(f"feat:{feats.ticker}:{feats.window_end}", 7 * 86400, payload)
     pipe.execute()
 
-    # Every window feeds the baseline, including quiet ones — otherwise the
-    # distribution would only contain spikes and the percentile would be
-    # meaningless.
-    store.record(feats.ticker, feats.alert_score)
+    # Every REAL window feeds the baseline, including quiet ones — otherwise
+    # the distribution would only contain spikes and the percentile would be
+    # meaningless. Simulated windows never do: on a public demo anyone can
+    # press Simulate, and each press would otherwise push that ticker's p99 up
+    # to the synthetic crisis until real alerts stopped firing for everyone.
+    if not feats.simulated:
+        store.record(feats.ticker, feats.alert_score)
