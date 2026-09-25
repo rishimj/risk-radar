@@ -41,7 +41,7 @@ const RiskRadar = (() => {
 
   /* ---- status pills: icon + label, never colour alone ---- */
   function renderStatus(data) {
-    const order = [["kafka", "Kafka"], ["flink", "Flink"], ["enrichment", "Enrichment"], ["redis", "Redis"]];
+    const order = [["kafka", "Kafka"], ["flink", "Stream"], ["enrichment", "Enrichment"], ["redis", "Redis"]];
     $("#status").innerHTML = order.map(([key, label]) => {
       const s = data[key] || { ok: false, detail: "unknown" };
       const cls = s.ok ? "ok" : "bad";
@@ -68,11 +68,14 @@ const RiskRadar = (() => {
       const risk = r.risk_score;
       const hasRisk = risk !== null && risk !== undefined;
       const cut = r.baseline;
-      const over = hasRisk && cut !== null && cut !== undefined && risk > cut;
+      // The cut is in uncapped alert-score units (0..1.875); compare like with
+      // like. pct() clamps, so a cut above 1 pins the marker to the gauge end.
+      const score = r.alert_score ?? risk;
+      const over = hasRisk && cut !== null && cut !== undefined && score > cut;
 
       const cutMark = (cut !== null && cut !== undefined)
         ? `<span class="cut" style="left:calc(${pct(cut)} - 1px)"
-             title="alert cut ${cut.toFixed(3)}"></span>` : "";
+             title="alert cut ${cut.toFixed(3)} (uncapped score)"></span>` : "";
 
       const state = !r.baseline_ready
         ? `<span class="warming">baseline warming up
@@ -113,7 +116,7 @@ const RiskRadar = (() => {
         <td class="num">${r.baseline?.toFixed(3) ?? "—"}</td>
         <td class="num">${r.sentiment_score?.toFixed(2) ?? "—"}</td>
         <td class="num">${r.total_mentions ?? 0}</td>
-        <td>${r.baseline_ready ? (r.risk_score > r.baseline ? "above baseline" : "normal")
+        <td>${r.baseline_ready ? ((r.alert_score ?? r.risk_score) > r.baseline ? "above baseline" : "normal")
                                : `warming (${r.baseline_samples}/${r.min_samples})`}</td>
       </tr>`).join("");
   }

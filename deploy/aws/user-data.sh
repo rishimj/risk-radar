@@ -41,7 +41,10 @@ cd "$APP_DIR/riskradar"
   echo "LOG_LEVEL=INFO"
 } > .env
 
-docker compose up -d --build
+# The stream engine is a compose profile; with no profile, nothing consumes
+# news.raw. x86_64 runs Flink natively, so production uses the reference
+# engine. Swap to --profile lite on a smaller instance.
+docker compose --profile flink up -d --build
 
 # Caddy terminates TLS and proxies to the webapp. Kept outside the compose file
 # so the local stack stays plain HTTP with no certificate machinery.

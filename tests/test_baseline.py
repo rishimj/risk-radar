@@ -121,3 +121,25 @@ def test_record_many_bulk_seeds(store):
     assert n == 120
     assert store.sample_count("TSLA") == 120
     assert store.threshold("TSLA") is not None
+
+
+def test_saturated_baseline_still_fires_on_a_worse_window(store):
+    """Regression for the open decision in the 2026-07-27 handoff.
+
+    A freshly seeded TSLA baseline held 4/223 samples at the 1.0 cap, so p99 was
+    exactly 1.0 and a maxed-out window (1.0 > 1.0) could never fire. Baselines
+    now store the uncapped alert score, so the capped dips sit at their true
+    values (here 1.2-1.3) and a real crisis (~1.8) clears them.
+    """
+    from riskcore.risk import Aggregation
+    for i in range(219):
+        store.record("TSLA", 0.30 + (i % 40) * 0.015)    # ordinary windows
+    for v in (1.2, 1.25, 1.28, 1.3):
+        store.record("TSLA", v)                           # dips that hit the cap
+    crisis = Aggregation()
+    for _ in range(10):
+        crisis.add(-0.926)                                # the measured FinBERT crisis
+    assert crisis.risk() == 1.0
+    decision = store.evaluate("TSLA", crisis.alert_score(), total_mentions=10)
+    assert decision.should_alert is True
+    assert decision.threshold < crisis.alert_score()

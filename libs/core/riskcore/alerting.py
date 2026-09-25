@@ -59,7 +59,8 @@ def build_alert(features: RiskFeatures, threshold: float, source: str = "live") 
     label = {"high": "CRITICAL", "medium": "WARNING", "low": "NOTICE"}[sev]
     message = (
         f"{label}: negative news risk for {features.ticker} "
-        f"(risk {features.risk_score:.3f} vs baseline {threshold:.3f})"
+        f"(risk {features.risk_score:.3f}; score {features.alert_score:.3f} "
+        f"vs baseline {threshold:.3f})"
     )
     return Alert(
         alert_id=Alert.new_id(),

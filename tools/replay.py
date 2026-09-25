@@ -28,6 +28,9 @@ log = logging.getLogger("replay")
 
 @dataclass
 class WindowScore:
+    """One (ticker, window). `risk` is the UNCAPPED alert score — the value the
+    live job records into the baseline and compares against it — not the 0-1
+    dashboard gauge, so seeding and calibration work in the same units."""
     ticker: str
     window: Window
     risk: float
@@ -141,7 +144,7 @@ def score_windows(docs: Iterable[dict],
         end = datetime.fromtimestamp(window.end_ms / 1000, tz=timezone.utc)
         feats = build_features(ticker, mentions, start, end)
         out.append(WindowScore(
-            ticker=ticker, window=window, risk=feats.risk_score,
+            ticker=ticker, window=window, risk=feats.alert_score,
             mentions=feats.total_mentions, neg=feats.neg_count, pos=feats.pos_count,
             top_headline=feats.top_headline,
         ))

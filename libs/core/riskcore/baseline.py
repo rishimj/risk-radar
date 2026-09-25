@@ -10,6 +10,10 @@ So: keep a trailing 24h distribution of window scores per ticker in a Redis
 sorted set and fire when the current window lands above that ticker's own Pth
 percentile.
 
+The recorded score is RiskFeatures.alert_score, the UNCAPPED risk (0..1.875),
+not the 0-1 dashboard gauge. With the cap, real news put ~1.8% of TSLA windows
+at exactly 1.0, so p99 == 1.0 and `1.0 > 1.0` could never fire.
+
 Known property — a sustained spike self-damps. Every window feeds the
 distribution, including the ones that fired, so a run of extreme windows drags
 the ticker's own percentile up to meet them and alerting goes quiet. That is

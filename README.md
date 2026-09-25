@@ -7,6 +7,10 @@ normal range.
 Live news → Kafka → PyFlink sliding windows → FinBERT sentiment → per-ticker
 adaptive alerting → Slack. All Python, one `docker compose up`.
 
+The stream stage runs on either of two interchangeable engines (see
+[Stream engines](#stream-engines)): **Flink** (the reference) or **lite**, the
+same topology in one ~60 MB Python process for laptops where Flink is too heavy.
+
 ```mermaid
 flowchart LR
   RSS[["Google News when:1h ×7<br/>+ SeekingAlpha · PRNewswire<br/>· CNBC · MarketWatch"]] --> ING[ingestion]
@@ -35,6 +39,7 @@ flowchart LR
 ```bash
 cp .env.example .env          # set SECRET_KEY; nothing else is required
 make demo                     # build, start, wait for the Flink job
+make demo-lite                # ...or the same pipeline without Flink
 ```
 
 Then open **http://localhost:3000**, create an account, pick tickers, and
@@ -43,19 +48,42 @@ optionally paste a [Slack incoming webhook](https://api.slack.com/messaging/webh
 | Port | What |
 |---|---|
 | 3000 | web app |
-| 8081 | Flink UI — the job should read **RUNNING** |
-| 8090 | Kafka UI — `news.raw`, `news.enriched` |
+| 8081 | Flink UI — the job should read **RUNNING** (flink engine) |
+| 8083 | lite processor `/stats` — `"state": "RUNNING"` (lite engine) |
+| 8090 | Kafka UI — `news.raw`, `news.enriched` (`docker compose --profile tools up -d kafka-ui`) |
 | 8082 | enrichment service (`/stats` shows the live sentiment tier) |
 | 8000 | dynamodb-local |
 
 No API keys anywhere. Every news source is free and keyless.
 
 ```bash
-make test        # 186 tests, no containers needed
+make test        # no containers needed (DynamoDB tests skip without dynamodb-local)
 make calibrate   # replay real news, report what alerting would do
 make seed        # populate per-ticker baselines from the last 24h
 make simulate    # force a synthetic event for TSLA
 ```
+
+## Stream engines
+
+| | `make demo` (flink) | `make demo-lite` (lite) |
+|---|---|---|
+| what runs | jobmanager + taskmanager + one-shot submitter | `services/processor`, one Python process |
+| measured RSS | ~960 MB (JM 309 + TM 654, x86_64 native) | **~62 MB** |
+| on Apple Silicon | amd64 under Rosetta (no arm64 PyFlink wheel) | native arm64 |
+| state | checkpointed every 30 s | in memory; Kafka offsets committed once the enrichment buffer drains |
+| UI | :8081 | :8083/stats |
+
+Both engines call the same `riskcore.stages` functions for every outcome
+(enrichment call, headline row, alert decision, feature/baseline write), and
+the lite engine reimplements only Flink's scheduling: micro-batch flushing,
+`max_ts - delay - 1` watermarks, zero allowed lateness and sliding-window
+firing. `tests/test_processor.py` pins those rules. Run **one** engine at a
+time: both consume `news.raw` with their own consumer group, so running both
+double-writes every window. `make demo` / `make demo-lite` stop the other one.
+
+What lite gives up: open windows are lost on restart (the next articles open
+new ones), and there is no parallelism, which a single-partition topic doesn't
+use anyway.
 
 ## Why there is no threshold constant
 
@@ -100,6 +128,12 @@ Two consequences worth knowing:
   fires 13.5% of the time — so a fresh `make demo` would spam alerts for exactly
   the hours you're watching. `tools/seed_baseline.py` replays the last 24h at
   startup; until a ticker has enough samples, alerting stays **silent**.
+- **The baseline stores the uncapped score.** The dashboard gauge is
+  `min(1.0, sentiment_risk × volume × bias)`, but real negative news hits that
+  cap often (15 of 258 freshly seeded TSLA windows), which put p99 at exactly
+  1.0, and `1.0 > 1.0` never fires. Baselines and the alert test therefore use
+  `alert_score`, the same formula without the cap (0 to 1.875), so a
+  ten-headline crisis (1.81) still outranks a three-headline dip (~1.1).
 - **A sustained spike self-damps.** Firing windows feed the distribution, so a
   prolonged crisis raises the ticker's own bar and quiets down. That is intended
   for anomaly detection, but it means this reports the *onset* of bad news, not
@@ -152,11 +186,19 @@ Real data kept correcting the design:
   are a set, so two windows with the same `(timestamp, score)` became one entry,
   under-counting the distribution and suppressing alerting indefinitely.
 
+- **PyFlink silently dropped the event-time assigner.** `with_idleness()`
+  returns a new `WatermarkStrategy` that wraps only the Java object, so calling
+  it after `with_timestamp_assigner()` discards the Python assigner and the job
+  falls back to Kafka produce time. Windows were keyed on when an article was
+  *sent*, not *published*, and simulate's watermark filler could not close them.
+  The lite engine surfaced it by disagreeing with Flink on the same input.
+
 ## Layout
 
 ```
-libs/core/riskcore/     shared domain logic — imported by every service AND the Flink job
-  risk.py               window scoring (the displayed 0-1 gauge)
+libs/core/riskcore/     shared domain logic — imported by every service AND both engines
+  stages.py             per-record stage logic both stream engines execute
+  risk.py               window scoring (0-1 gauge + uncapped alert score)
   baseline.py           per-ticker adaptive alert cut
   entities.py           Mag 7 matching, ambiguity guard
   feeds.py              source definitions + parsing
@@ -164,9 +206,10 @@ libs/core/riskcore/     shared domain logic — imported by every service AND th
 services/enrichment/    FastAPI + FinBERT, :8082
 services/ingestion/     poll → filter → dedup → clamp → produce
 services/webapp/        auth, dashboard, API, :3000
-flink/job/news_job.py   the streaming topology
+flink/job/news_job.py   the streaming topology (flink engine)
+services/processor/     the same topology in plain Python (lite engine), :8083
 tools/                  calibrate.py · seed_baseline.py · replay.py
-tests/                  186 tests, container-free
+tests/                  container-free (DynamoDB-backed ones need dynamodb-local)
 deploy/aws/             EC2 user-data, Caddy, IAM policy
 ```
 
@@ -184,15 +227,6 @@ talks to dynamodb-local, unset it and boto3 uses the instance role.
 
 ## Status
 
-Phases 0–8 complete: infra, shared library, enrichment, ingestion, the Flink job,
-the webapp, simulate, tooling, and deploy scripts.
-
-Verified here: 186 tests pass; the Flink job graph builds against a real
-PyFlink 1.20.1 runtime; the ingestion path fetches and matches live articles;
-the calibration harness runs end-to-end on real news.
-
-Not yet verified: the full compose stack has never been started — this
-environment has no Docker daemon — and the AWS scripts have not been executed.
-The riskiest unexercised path is the micro-batch operator's blocking HTTP call
-inside a processing-time timer, which is proven to construct but not to run
-under load.
+See `CLAUDE.md` for the latest verified state. In short: both engines run the
+full compose stack end to end, and a simulated TSLA crisis raises an alert on
+each (lite and Flink both within seconds of `/api/simulate`).

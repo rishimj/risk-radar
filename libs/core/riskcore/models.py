@@ -109,6 +109,14 @@ class RiskFeatures(_JsonMixin):
     total_mentions: int
     top_headline: str = ""
     top_url: str = ""
+    # Uncapped risk (0 .. 1.875). Alerting compares THIS against the baseline;
+    # risk_score is min(1.0, alert_score) for display. Defaults to -1 so a
+    # payload written before this field existed falls back to risk_score.
+    alert_score: float = -1.0
+
+    def __post_init__(self):
+        if self.alert_score is None or self.alert_score < 0:
+            self.alert_score = self.risk_score
 
 
 @dataclass

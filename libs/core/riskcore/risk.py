@@ -49,6 +49,20 @@ class Aggregation:
         return round(self.sentiment_ewm, 3) if self.count else 0.0
 
     def risk(self) -> float:
+        """The 0-1 gauge the dashboard shows and severity bands are cut on."""
+        return min(1.0, self.alert_score())
+
+    def alert_score(self) -> float:
+        """The same formula WITHOUT the 1.0 cap; what the baseline is built from.
+
+        Range 0 .. 1.875 (1.0 sentiment risk x 1.5 volume x 1.25 negative bias).
+        The cap destroyed the top of the distribution: real negative news
+        saturates it often enough (~1.8% of seeded TSLA windows) that a ticker's
+        p99 became exactly 1.0, and since a capped window cannot exceed 1.0 under
+        the strict `>` test, that ticker could never alert again. Uncapped, a
+        ten-headline crisis (~1.8) still ranks above a three-headline one (~1.3)
+        that merely touched the cap, so percentiles keep their meaning.
+        """
         if self.count == 0:
             return 0.0
 
@@ -65,7 +79,7 @@ class Aggregation:
         else:
             negative_bias = 1.0
 
-        return round(min(1.0, sentiment_risk * volume_multiplier * negative_bias), 3)
+        return round(sentiment_risk * volume_multiplier * negative_bias, 3)
 
 
 def explode_mentions(doc: Dict[str, Any]) -> List[CompanyMention]:
@@ -99,7 +113,7 @@ def explode_mentions(doc: Dict[str, Any]) -> List[CompanyMention]:
 
 
 def score_sentiments(sentiments: Sequence[float]) -> float:
-    """Risk for a bare sequence of sentiments. Used by the calibration harness."""
+    """Capped 0-1 risk for a bare sequence of sentiments."""
     agg = Aggregation()
     for s in sentiments:
         agg.add(s)
@@ -130,6 +144,7 @@ def build_features(
         window_start=iso(window_start),
         window_end=iso(window_end),
         risk_score=agg.risk(),
+        alert_score=agg.alert_score(),
         sentiment_score=agg.sentiment,
         neg_count=agg.neg_count,
         pos_count=agg.pos_count,

@@ -37,6 +37,7 @@ rds = redis.from_url(config.REDIS_URL)
 baselines = BaselineStore(rds)
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "").lower() in {"1", "true", "yes"}
 FLINK_URL = os.getenv("FLINK_URL", "http://flink-jobmanager:8081")
+PROCESSOR_URL = os.getenv("PROCESSOR_URL", "http://processor:8083")
 
 
 @asynccontextmanager
@@ -197,6 +198,10 @@ def api_risk(request: Request):
             "ticker": ticker,
             "name": COMPANIES[ticker].name if ticker in COMPANIES else ticker,
             "risk_score": feats.get("risk_score") if feats else None,
+            # What the baseline cut is in the units of (uncapped); risk_score
+            # is the 0-1 gauge. Older payloads lack it and fall back.
+            "alert_score": (feats.get("alert_score", feats.get("risk_score"))
+                            if feats else None),
             "sentiment_score": feats.get("sentiment_score") if feats else None,
             "total_mentions": feats.get("total_mentions") if feats else 0,
             "window_end": feats.get("window_end") if feats else None,
@@ -242,6 +247,24 @@ def api_status():
             raise RuntimeError(f"no RUNNING job ({len(jobs)} known)")
         return running[0].get("name", "running")
 
+    def lite_detail():
+        resp = requests.get(f"{PROCESSOR_URL}/stats", timeout=4)
+        resp.raise_for_status()
+        stats = resp.json()
+        if stats.get("state") != "RUNNING":
+            raise RuntimeError(f"lite processor {stats.get('state', '?')}")
+        return stats.get("name", "lite")
+
+    def stream_detail():
+        """Whichever engine is up: the Flink cluster or the lite processor."""
+        errors = []
+        for engine, fn in (("lite", lite_detail), ("flink", flink_detail)):
+            try:
+                return fn()
+            except Exception as exc:                   # noqa: BLE001
+                errors.append(f"{engine}: {str(exc)[:50]}")
+        raise RuntimeError("; ".join(errors))
+
     def enrichment_detail():
         resp = requests.get(f"{config.ENRICHMENT_URL}/stats", timeout=4)
         resp.raise_for_status()
@@ -253,7 +276,7 @@ def api_status():
 
     return {
         "kafka": probe(kafka_detail),
-        "flink": probe(flink_detail),
+        "flink": probe(stream_detail),
         "enrichment": probe(enrichment_detail),
         "redis": probe(redis_detail),
     }
