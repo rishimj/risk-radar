@@ -15,7 +15,7 @@
 #
 # Options (env):
 #   SITE_HOST   public hostname for the Caddy block (required unless SKIP_CADDY=1)
-#   LITE=1      skip torch/FinBERT; sentiment falls back to FinVADER (~150 MB RSS)
+#   LITE=1      skip torch/FinBERT; sentiment falls back to VADER/FinVADER (~150 MB RSS)
 #   SKIP_CADDY=1, SKIP_SYSTEMD=1   for testing the install in a container
 set -euo pipefail
 

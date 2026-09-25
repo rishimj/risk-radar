@@ -10,5 +10,7 @@ bcrypt==4.2.1
 itsdangerous==2.2.0
 # Sentiment fallbacks (tiny, pure Python). FinBERT is optional, see
 # requirements-finbert.txt; without it the ladder uses FinVADER.
-finvader==1.0.4
+# finvader declares Requires-Python <3.12 (Ubuntu 24.04 ships 3.12); there the
+# ladder is FinBERT -> VADER.
+finvader==1.0.4; python_version < "3.12"
 vaderSentiment==3.3.2
