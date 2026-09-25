@@ -1,62 +1,38 @@
-{% extends "base.html" %}
-{% block title %}Settings — RiskRadar{% endblock %}
+{% extends "_app.html" %}
+{% set active = "settings" %}
+{% block title %}Watchlist & Slack · RiskRadar{% endblock %}
+{% block page_title %}Watchlist &amp; Slack{% endblock %}
 {% block content %}
-<div style="max-width:620px;margin:28px auto">
-
-  <div class="card">
-    <h2>Watchlist</h2>
-    <p class="sub">Alerts are delivered only for the tickers selected here.</p>
-    <div class="picker" id="picker">
-      {% for ticker, info in companies.items() %}
-        <label>
-          <input type="checkbox" value="{{ ticker }}"
-                 {% if ticker in watching %}checked{% endif %}>
-          {{ info.name }} <small style="color:var(--text-muted)">{{ ticker }}</small>
-        </label>
-      {% endfor %}
+<div class="narrow">
+  <div class="card flat">
+    <h3>Watchlist</h3>
+    <p class="card-sub">Alerts and dashboard cards cover the tickers selected here.</p>
+    {% include "_picker.html" %}
+    <div class="form-actions">
+      <button id="save-watchlist">Save watchlist</button>
+      <span id="watchlist-msg" class="note" role="status"></span>
     </div>
-    <p></p>
-    <button id="save-watchlist">Save watchlist</button>
-    <span id="watchlist-msg" class="note"></span>
   </div>
 
-  {% if user.is_guest %}
-  <div class="card">
-    <h2>Slack</h2>
-    <p class="sub">Guest demo accounts can't connect Slack.
+  <div class="card flat" style="margin-top:16px">
+    <div class="card-h"><h3>Slack</h3>
+      {% if user.is_guest %}<span class="badge">guest</span>
+      {% elif user.slack_verified_at %}<span class="badge good">● verified {{ user.slack_verified_at[:10] }}</span>
+      {% elif user.slack_webhook_url %}<span class="badge warn">▲ not verified</span>
+      {% else %}<span class="badge">not connected</span>{% endif %}</div>
+    {% if user.is_guest %}
+    <p class="card-sub">Guest demo accounts can't connect Slack.
       <a href="/signup">Create a free account</a> to get alerts in your workspace.</p>
-  </div>
-  {% else %}
-  <div class="card">
-    <h2>Slack</h2>
-    <p class="sub">
-      {% if user.slack_verified_at %}
-        Verified {{ user.slack_verified_at[:16].replace("T", " ") }}.
-      {% else %}
-        Not verified yet — send a test message to confirm it works.
-      {% endif %}
-    </p>
-    <input id="slack-url" type="url" placeholder="https://hooks.slack.com/services/..."
-           value="{{ user.slack_webhook_url or '' }}">
-    <p></p>
-    <button id="save-slack" class="ghost">Save</button>
-    <button id="test-slack">Send test message</button>
-    <span id="slack-msg" class="note"></span>
-  </div>
-  {% endif %}
-
-  <div class="card">
-    <h2>Account</h2>
-    <p class="sub">{% if user.is_guest %}Guest demo account, deleted after 48 hours.
-      {% else %}{{ user.email }}{% endif %}</p>
-    <form method="post" action="/logout" class="inline-form">
-      <button type="submit" class="ghost">Sign out</button>
-    </form>
+    {% else %}
+    {% include "_slack.html" %}
+    {% endif %}
   </div>
 
+  <div class="card flat" style="margin-top:16px">
+    <div class="card-h"><div><h3>Account</h3>
+      <p class="card-sub">{% if user.is_guest %}Guest demo account, deleted automatically after 48 hours.{% else %}{{ user.email }}{% endif %}</p></div>
+      <form method="post" action="/logout" class="inline-form"><button type="submit" class="ghost sm">Sign out</button></form></div>
+  </div>
 </div>
 {% endblock %}
-
-{% block scripts %}
-<script src="/static/app.js" data-init="onboarding"></script>
-{% endblock %}
+{% block scripts %}<script src="/static/app.js" data-init="onboarding"></script>{% endblock %}

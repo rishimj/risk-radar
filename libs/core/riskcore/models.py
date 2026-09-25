@@ -159,6 +159,7 @@ class Alert(_JsonMixin):
     source: str = "live"       # "live" | "simulated"
     top_headline: str = ""
     top_url: str = ""
+    alert_score: float = 0.0   # the uncapped score that crossed the baseline
 
     @staticmethod
     def new_id() -> str:

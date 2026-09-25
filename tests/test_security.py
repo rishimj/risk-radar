@@ -228,7 +228,8 @@ def test_landing_shows_real_news_only(client):
     import json
     from riskcore.models import SIMULATED_SOURCE
     client.fake_redis.lpush("recent:headlines", json.dumps({
-        "title": "Real headline", "url": "https://x/1", "source": "Reuters", "companies": []}))
+        "title": "Real headline", "url": "https://x/1", "source": "Reuters",
+        "companies": [{"ticker": "TSLA", "role": "primary"}]}))
     client.fake_redis.lpush("recent:headlines", json.dumps({
         "title": "Synthetic crisis", "url": "https://x/2", "source": SIMULATED_SOURCE,
         "companies": []}))

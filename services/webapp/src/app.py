@@ -24,6 +24,7 @@ from riskcore.models import Alert, iso, utcnow
 
 import auth
 import guard
+import insights
 import simulate as simulate_mod
 import store
 
@@ -56,6 +57,7 @@ status_labels: Dict[str, str] = {}
 templates.env.globals["stack_label"] = os.getenv(
     "STACK_LABEL", "Kafka · PyFlink · FinBERT · Redis · DynamoDB")
 templates.env.globals["guest_demo"] = GUEST_DEMO
+templates.env.globals["percentile"] = config.ALERT_PERCENTILE
 
 _EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]+\.[^@\s]{2,}$")
 # A real bcrypt hash of nothing, verified against when the email is unknown so a
@@ -125,11 +127,26 @@ def landing(request: Request):
     if user:
         return RedirectResponse("/dashboard", status_code=303)
     return templates.TemplateResponse(request, "landing.html", {
-        # The public page shows real news only; visitors' simulations stay on
-        # their dashboards instead of crowding it out.
-        "headlines": headlines.recent(rds, limit=12, include_simulated=False),
+        "headlines": _landing_headlines(),
         "alerts": store.recent_alerts(limit=5),
+        "percentile": baselines.percentile_p,
     })
+
+
+def _landing_headlines(limit: int = 10):
+    """Real news that names a watched company in its headline.
+
+    Not simulated articles (visitors' demos stay on their dashboards), and not
+    stories that merely mention a company in the summary or come from its
+    domain; those are what put "older dogs can develop..." under META.
+    """
+    out = []
+    for h in headlines.recent(rds, limit=80, include_simulated=False):
+        if any(c.get("role") == "primary" for c in h.get("companies") or []):
+            out.append(h)
+            if len(out) >= limit:
+                break
+    return out
 
 
 @app.get("/signup", response_class=HTMLResponse)
@@ -282,9 +299,16 @@ def settings(request: Request):
 # api
 # ---------------------------------------------------------------------------
 @app.get("/api/headlines")
-def api_headlines(request: Request, limit: int = 25, ticker: Optional[str] = None):
+def api_headlines(request: Request, limit: int = 25, ticker: Optional[str] = None,
+                  relevant: bool = False):
+    """relevant=true: only stories that name a tracked company in the headline."""
     limit = max(1, min(limit, 100))
-    return {"headlines": headlines.recent(rds, limit=limit, ticker=(ticker or "")[:10] or None)}
+    ticker = (ticker or "")[:10] or None
+    if not relevant:
+        return {"headlines": headlines.recent(rds, limit=limit, ticker=ticker)}
+    out = [h for h in headlines.recent(rds, limit=limit * 4, ticker=ticker)
+           if any(c.get("role") == "primary" for c in h.get("companies") or [])]
+    return {"headlines": out[:limit]}
 
 
 @app.get("/api/risk")
@@ -296,31 +320,24 @@ def api_risk(request: Request):
     alerting actually works.
     """
     user = require_user(request)
-    out = []
-    for ticker in store.watchlist(user["user_id"]):
-        raw = rds.get(f"feat:{ticker}:latest")
-        feats = json.loads(raw) if raw else None
-        threshold = baselines.threshold(ticker)
-        samples = baselines.sample_count(ticker)
-        out.append({
-            "ticker": ticker,
-            "name": COMPANIES[ticker].name if ticker in COMPANIES else ticker,
-            "risk_score": feats.get("risk_score") if feats else None,
-            # What the baseline cut is in the units of (uncapped); risk_score
-            # is the 0-1 gauge. Older payloads lack it and fall back.
-            "alert_score": (feats.get("alert_score", feats.get("risk_score"))
-                            if feats else None),
-            "sentiment_score": feats.get("sentiment_score") if feats else None,
-            "total_mentions": feats.get("total_mentions") if feats else 0,
-            "window_end": feats.get("window_end") if feats else None,
-            "top_headline": feats.get("top_headline") if feats else "",
-            "top_url": feats.get("top_url") if feats else "",
-            "baseline": round(threshold, 3) if threshold is not None else None,
-            "baseline_samples": samples,
-            "baseline_ready": threshold is not None,
-            "min_samples": baselines.min_samples,
-        })
+    out = [insights.ticker_row(rds, baselines, t) for t in store.watchlist(user["user_id"])]
     return {"risk": out, "percentile": baselines.percentile_p}
+
+
+_overview_cache = {"at": 0.0, "value": None}
+_overview_lock = threading.Lock()
+
+
+@app.get("/api/public/overview")
+def api_public_overview():
+    """Live, public-safe aggregates for the landing page. Cached: it is the one
+    unauthenticated JSON endpoint, so every visitor shares one computation."""
+    with _overview_lock:
+        now = time.monotonic()
+        if _overview_cache["value"] is None or now - _overview_cache["at"] > STATUS_CACHE_SECONDS:
+            _overview_cache["value"] = insights.overview(rds, baselines)
+            _overview_cache["at"] = now
+        return _overview_cache["value"]
 
 
 @app.get("/api/alerts")

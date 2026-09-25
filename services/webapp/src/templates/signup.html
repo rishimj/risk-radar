@@ -1,21 +1,21 @@
-{% extends "base.html" %}
-{% block title %}Create account — RiskRadar{% endblock %}
-{% block content %}
-<div class="auth">
-  <div class="card">
-    <h2>Create your account</h2>
-    <p class="sub">Pick tickers, connect Slack, get alerted when the news turns.</p>
-    {% if error %}<div class="error">{{ error }}</div>{% endif %}
-    <form method="post" action="/signup">
-      <label for="email">Email</label>
-      <input id="email" name="email" type="email" required autocomplete="email" autofocus>
-      <label for="password">Password</label>
-      <input id="password" name="password" type="password" required minlength="8"
-             autocomplete="new-password">
-      <p class="note">At least 8 characters.</p>
-      <button type="submit">Create account</button>
-    </form>
-    <p class="note">Already registered? <a href="/login">Sign in</a>.</p>
-  </div>
-</div>
+{% extends "_auth.html" %}
+{% block title %}Create your account · RiskRadar{% endblock %}
+{% block form %}
+<a href="/" class="note">&larr; Back to RiskRadar</a>
+<h1 style="margin-top:18px">Create your account</h1>
+<p class="sub">Pick your tickers, connect Slack, and get alerted when the news turns.</p>
+{% if error %}<div class="error" role="alert"><span aria-hidden="true">!</span>{{ error }}</div>{% endif %}
+<form method="post" action="/signup">
+  <label for="email">Email</label>
+  <input id="email" name="email" type="email" required maxlength="254" autocomplete="email" autofocus>
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password" required minlength="8" maxlength="128" autocomplete="new-password">
+  <p class="note" style="margin-top:6px">At least 8 characters.</p>
+  <button type="submit">Create account <span class="arrow">&rarr;</span></button>
+</form>
+{% if guest_demo %}
+<div class="divider">or</div>
+<form method="post" action="/demo"><button type="submit" class="ghost demo-btn">Just looking? Try the live demo</button></form>
+{% endif %}
+<p class="alt">Already have an account? <a href="/login">Sign in</a></p>
 {% endblock %}
