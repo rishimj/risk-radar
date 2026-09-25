@@ -20,6 +20,18 @@ x-common-env: &common-env
   AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-local}
   ENRICHMENT_URL: http://enrichment:8082
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  # Risk/alert/window tuning. These were documented in .env.example but never
+  # declared here, so every one of them silently fell back to the hardcoded
+  # default in riskcore/config.py — editing .env appeared to do nothing. They
+  # are exactly the knobs `make calibrate` exists to tune, so an inert
+  # ALERT_PERCENTILE made the whole calibration loop unactionable.
+  ALERT_PERCENTILE: ${ALERT_PERCENTILE:-97}
+  MIN_MENTIONS_FOR_ALERT: ${MIN_MENTIONS_FOR_ALERT:-2}
+  MIN_BASELINE_SAMPLES: ${MIN_BASELINE_SAMPLES:-50}
+  ALERT_COOLDOWN_MINUTES: ${ALERT_COOLDOWN_MINUTES:-10}
+  WINDOW_SIZE_SECONDS: ${WINDOW_SIZE_SECONDS:-900}
+  WINDOW_SLIDE_SECONDS: ${WINDOW_SLIDE_SECONDS:-180}
+  WATERMARK_DELAY_SECONDS: ${WATERMARK_DELAY_SECONDS:-30}
 
 services:
   kafka:
