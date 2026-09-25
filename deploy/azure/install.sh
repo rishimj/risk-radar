@@ -99,8 +99,10 @@ if [ ! -x "$ROOT/venv/bin/python" ]; then
 fi
 "$ROOT/venv/bin/pip" install -q --upgrade pip
 "$ROOT/venv/bin/pip" install -q -r "$ROOT/app/services/standalone/requirements.txt"
-# Reinstall the shared library every time: it is a regular (non-editable)
-# install, so without --force-reinstall an upgrade would keep stale code.
+# The shared library: a normal install first (pulls its dependencies on a fresh
+# venv), then a forced reinstall of just its own code, because a regular
+# (non-editable) install keeps stale code on upgrade when the version is unchanged.
+"$ROOT/venv/bin/pip" install -q "$ROOT/app/libs/core"
 "$ROOT/venv/bin/pip" install -q --force-reinstall --no-deps "$ROOT/app/libs/core"
 if [ "$LITE" != 1 ]; then
   "$ROOT/venv/bin/pip" install -q --index-url https://download.pytorch.org/whl/cpu "torch==$TORCH_VERSION"
