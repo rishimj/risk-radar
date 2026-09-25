@@ -77,6 +77,7 @@ def build_alert(features: RiskFeatures, threshold: float, source: str = "live") 
         source=source,
         top_headline=features.top_headline,
         top_url=features.top_url,
+        alert_score=round(features.alert_score, 3),
     )
 
 
@@ -192,6 +193,7 @@ def persist_alert(alert: Alert) -> None:
     # DynamoDB rejects float; store risk as a string-safe Decimal-ish value.
     item["risk_score"] = str(alert.risk_score)
     item["baseline_p"] = str(alert.baseline_p)
+    item["alert_score"] = str(alert.alert_score)
     db.table("alerts").put_item(Item=item)
 
 

@@ -220,6 +220,32 @@ class Node:
 
             time.sleep(max(5.0, config.FETCH_INTERVAL_SECONDS - (time.monotonic() - started)))
 
+    def backfill_history(self):
+        """Fill empty sparkline lists from the per-window feature keys (kept 7 days),
+        so an upgrade shows real history immediately instead of starting blank."""
+        import json as _json
+        for ticker in config.MAG7:
+            key = stages.history_key(ticker)
+            try:
+                if self.redis.llen(key):
+                    continue
+                names = sorted(k.decode() if isinstance(k, bytes) else k
+                               for k in self.redis.scan_iter(f"feat:{ticker}:2*", count=500))
+                names = names[-stages.HISTORY_LEN:]
+                if not names:
+                    continue
+                points = []
+                for raw in self.redis.mget(names):
+                    if raw:
+                        from riskcore.models import RiskFeatures
+                        points.append(stages.history_point(RiskFeatures.from_dict(_json.loads(raw))))
+                # lpush puts the last pushed first: push oldest -> newest
+                self.redis.lpush(key, *points)
+                self.redis.ltrim(key, 0, stages.HISTORY_LEN - 1)
+                log.info("backfilled %d history points for %s", len(points), ticker)
+            except Exception:                              # noqa: BLE001
+                log.exception("history backfill failed for %s", ticker)
+
     def seed_baselines(self):
         """Fill any ticker below the sample floor from the last SEED_HOURS of news."""
         from collections import defaultdict
@@ -271,6 +297,7 @@ def main() -> int:
     start("pipeline", node.pipeline_loop)
 
     def seed_then_ingest():
+        node.backfill_history()
         node.seed_baselines()
         node.ingestion_loop()
     start("ingestion", seed_then_ingest)

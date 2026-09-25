@@ -1,87 +1,69 @@
-{% extends "base.html" %}
-{% block title %}Dashboard — RiskRadar{% endblock %}
+{% extends "_app.html" %}
+{% set active = "overview" %}
+{% block title %}Overview · RiskRadar{% endblock %}
+{% block page_title %}Overview{% endblock %}
+{% block topbar_right %}
+<span class="live"><span class="dot live" aria-hidden="true"></span><span id="updated">Live</span></span>
+{% endblock %}
 {% block content %}
+{% if user.is_guest %}
+<div class="guest-banner">
+  <span><b>You're in the live demo.</b> Everything here is real news scored in real time. Press
+    <b>Inject synthetic event</b> to watch an alert fire end to end.</span>
+  <a class="btn sm" href="/signup">Create an account</a>
+</div>
+{% endif %}
 
-<div class="card">
-  <h2>Pipeline
-    <span class="note" id="updated"></span>
-  </h2>
-  <p class="sub">Live health of every stage.</p>
-  <div class="pills" id="status">
-    <span class="pill wait"><span class="dot"></span><span class="ico">…</span> checking</span>
-  </div>
+<div class="status-strip" id="status" aria-label="Pipeline health">
+  <span class="status-pill"><span class="dot"></span>Checking pipeline…</span>
 </div>
 
-<div class="card">
-  <h2>
-    Risk by ticker
-    <span class="note">vs each ticker's own p<span id="pct">99</span> baseline</span>
-  </h2>
-  <p class="sub">
-    The marker on each track is that ticker's alert cut, computed from its own
-    last 24 hours — so it sits in a different place for every company.
-  </p>
-  <div id="risk"><p class="note">Loading…</p></div>
+<div class="kpis">
+  <div class="kpi"><div class="k">Watching</div><div class="v" id="kpi-watching">{{ watching|length }}</div>
+    <div class="d">of 7 tickers</div></div>
+  <div class="kpi"><div class="k">Highest risk now</div><div class="v" id="kpi-top">—</div>
+    <div class="d" id="kpi-top-d">&nbsp;</div></div>
+  <div class="kpi"><div class="k">Above baseline</div><div class="v" id="kpi-over">—</div>
+    <div class="d">tickers past their p<span class="pct">97</span> cut</div></div>
+  <div class="kpi"><div class="k">Alerts</div><div class="v" id="kpi-alerts">—</div>
+    <div class="d" id="kpi-alerts-d">on your tickers</div></div>
+</div>
 
-  <details style="margin-top:14px">
-    <summary class="note" style="cursor:pointer">Table view</summary>
-    <div class="overflow-x">
-      <table id="risk-table">
-        <thead><tr>
-          <th>Ticker</th><th class="num">Risk</th><th class="num">Baseline</th>
-          <th class="num">Sentiment</th><th class="num">Mentions</th><th>State</th>
-        </tr></thead>
-        <tbody></tbody>
-      </table>
+<div class="sec-h"><h2>Risk by ticker</h2>
+  <span class="note">alert score per 15-minute window vs that ticker's own p<span class="pct">97</span> baseline</span></div>
+<div class="tickers" id="risk" aria-live="polite"><p class="note">Loading…</p></div>
+
+<div class="two" style="margin-top:26px">
+  <div class="card flat" id="alerts">
+    <div class="card-h"><div><h3>Alerts</h3><p class="card-sub">On the tickers you watch, newest first</p></div></div>
+    <ul class="timeline" id="alert-list" style="margin-top:16px"><li class="note">Loading…</li></ul>
+  </div>
+
+  <div class="card flat sim-card">
+    <div class="card-h"><div><h3>Inject a synthetic event</h3>
+      <p class="card-sub">Ten negative headlines, tagged simulated. They never reach Slack or any baseline.</p></div></div>
+    <div class="sim-controls">
+      <label for="sim-ticker" class="sr-only">Ticker</label>
+      <select id="sim-ticker">
+        {% for ticker in watching %}<option value="{{ ticker }}">{{ ticker }}</option>{% endfor %}
+      </select>
+      <button id="simulate">Inject synthetic event</button>
     </div>
-  </details>
-</div>
-
-<div class="grid">
-  <div class="card">
-    <h2>My alerts</h2>
-    <p class="sub">Alerts on the tickers you watch, newest first.</p>
-    <div class="overflow-x">
-      <table id="alerts">
-        <thead><tr>
-          <th>When</th><th>Ticker</th><th class="num">Risk</th>
-          <th>Severity</th><th>Slack</th>
-        </tr></thead>
-        <tbody><tr><td colspan="5" class="note">Loading…</td></tr></tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>Demo</h2>
-    <p class="sub">
-      Real news fires these alerts on its own — every Mag 7 ticker crossed its
-      threshold organically in a 6-hour sample. This button is for when you need
-      one <em>now</em>: it injects a synthetic negative burst, tagged as
-      simulated so your history stays honest.
-    </p>
-    <label for="sim-ticker">Ticker</label>
-    <select id="sim-ticker" style="padding:9px 11px;font:inherit;border-radius:7px;
-            border:1px solid var(--border);background:var(--page);color:var(--text-primary)">
-      {% for ticker in watching %}<option value="{{ ticker }}">{{ ticker }}</option>{% endfor %}
-    </select>
-    <p></p>
-    <button id="simulate">Inject synthetic event</button>
-    <div id="sim-steps" class="note" style="margin-top:10px"></div>
+    <ol class="steps" id="sim-steps">
+      <li data-step="publish"><span class="s-ic">1</span>Publish 10 headlines + watermark filler</li>
+      <li data-step="score"><span class="s-ic">2</span>FinBERT scores each headline</li>
+      <li data-step="window"><span class="s-ic">3</span>15-minute window closes on event time</li>
+      <li data-step="alert"><span class="s-ic">4</span>Score crosses the baseline, alert fires</li>
+    </ol>
+    <div class="sim-msg" id="sim-msg" role="status"></div>
   </div>
 </div>
 
-<div class="card">
-  <h2>Live headlines</h2>
-  <p class="sub">
-    From Google News, Seeking Alpha, PR Newswire, CNBC and MarketWatch. Sentiment
-    is scored per headline; the number is shown so colour never carries it alone.
-  </p>
-  <ul class="feed" id="headlines"><li class="note">Loading…</li></ul>
+<div class="card flat" id="headlines" style="margin-top:16px">
+  <div class="card-h"><div><h3>Live headlines</h3>
+    <p class="card-sub">Stories that name a tracked company, scored by FinBERT as they arrive (includes simulated ones)</p></div>
+    <span class="badge good"><span class="dot live" aria-hidden="true"></span>streaming</span></div>
+  <ul class="feed" id="headline-list" style="margin-top:8px"><li class="note">Loading…</li></ul>
 </div>
-
 {% endblock %}
-
-{% block scripts %}
-<script src="/static/app.js" data-init="dashboard"></script>
-{% endblock %}
+{% block scripts %}<script src="/static/app.js" data-init="dashboard"></script>{% endblock %}

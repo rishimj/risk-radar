@@ -4,37 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}RiskRadar{% endblock %}</title>
+  <meta name="description" content="RiskRadar scores live financial news with FinBERT and alerts when a company moves outside its own normal range.">
+  <meta name="theme-color" content="#635bff">
   <link rel="stylesheet" href="/static/app.css">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>📡</text></svg>">
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 </head>
-<body>
-<header class="top">
-  <div class="wrap">
-    <a class="brand" href="/">Risk<span>Radar</span></a>
-    <nav class="links">
-      {% if user %}
-        <a href="/dashboard">Dashboard</a>
-        <a href="/settings">Settings</a>
-        <form method="post" action="/logout" class="inline-form">
-          <button type="submit" class="linklike">Sign out</button>
-        </form>
-      {% else %}
-        <a href="/login">Sign in</a>
-        <a class="btn" href="/signup">Get started</a>
-      {% endif %}
-    </nav>
-  </div>
-</header>
-
-<main class="wrap">
-  {% block content %}{% endblock %}
-</main>
-
-<footer class="wrap">
-  {{ stack_label }} —
-  alerting is relative to each ticker's own 24h baseline, not a fixed threshold.
-</footer>
-
+<body class="{% block body_class %}{% endblock %}">
+{% block body %}{% endblock %}
 {% block scripts %}{% endblock %}
 </body>
 </html>

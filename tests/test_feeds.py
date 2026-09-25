@@ -157,3 +157,11 @@ def test_parse_date_rejects_garbage():
     assert parse_date("not a date") is None
     assert parse_date("") is None
     assert parse_date(None) is None
+
+
+def test_titles_are_decoded_once_to_plain_text():
+    """Feeds that double-encode ("Wire &amp; Cable") must not show "&amp;" in the UI."""
+    from riskcore.feeds import clean_title
+    assert clean_title("Rexel to Acquire GCG, a Leading Specialty Wire &amp; Cable Platform") \
+        == "Rexel to Acquire GCG, a Leading Specialty Wire & Cable Platform"
+    assert clean_title("<b>Apple</b> &lt;script&gt;") == "Apple <script>"   # plain text; escaped on render
