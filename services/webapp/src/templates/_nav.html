@@ -1,0 +1,20 @@
+<header class="nav{% if on_hero %} on-hero{% endif %}" id="nav">
+  <div class="wrap">
+    {% include "_brand.html" %}
+    <nav class="nav-links" aria-label="Main">
+      <a href="/#how" class="hide-sm">How it works</a>
+      <a href="/#engineering" class="hide-sm">Engineering</a>
+      <a href="https://github.com/rishimj/risk-radar" class="hide-sm" rel="noopener">GitHub</a>
+      {% if user %}
+        <a class="btn dark sm" href="/dashboard">Dashboard <span class="arrow">&rarr;</span></a>
+      {% else %}
+        <a href="/login">Sign in</a>
+        {% if guest_demo %}
+        <form method="post" action="/demo" class="inline-form">
+          <button type="submit" class="dark sm">Try the demo <span class="arrow">&rarr;</span></button>
+        </form>
+        {% endif %}
+      {% endif %}
+    </nav>
+  </div>
+</header>

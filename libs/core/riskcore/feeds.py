@@ -21,6 +21,7 @@ from typing import Dict, Iterable, List, Optional
 from urllib.parse import quote
 import email.utils
 import hashlib
+import html
 import logging
 import re
 import time
@@ -78,11 +79,14 @@ def default_feeds(window: str = "1h") -> List[Feed]:
 
 
 def clean_title(raw: str) -> str:
-    return _PUBLISHER_SUFFIX.sub("", _TAGS.sub("", raw or "")).strip()
+    # Some feeds entity-encode titles a second time ("Wire &amp; Cable" arrives
+    # as literal text). Decode once, AFTER stripping tags, so the stored title
+    # is plain text; every renderer escapes it on the way out.
+    return html.unescape(_PUBLISHER_SUFFIX.sub("", _TAGS.sub("", raw or ""))).strip()
 
 
 def clean_text(raw: str) -> str:
-    return _TAGS.sub(" ", raw or "").replace("&nbsp;", " ").strip()
+    return html.unescape(_TAGS.sub(" ", raw or "")).replace("\xa0", " ").strip()
 
 
 _ATOM = "{http://www.w3.org/2005/Atom}"

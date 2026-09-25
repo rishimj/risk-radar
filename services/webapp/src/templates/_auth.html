@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block body_class %}auth{% endblock %}
+{% block body %}
+<div class="auth-shell">
+  <section class="auth-art" aria-hidden="true">
+    <div class="hero-bg"><span class="blob b1"></span><span class="blob b2"></span>
+      <span class="blob b3"></span><span class="blob b4"></span></div>
+    {% include "_brand.html" %}
+    <div>
+      <blockquote>Every ticker gets its own bar, learned from its own last 24 hours.</blockquote>
+      <p class="sub">FinBERT scores each headline as it breaks. A window alerts only when it
+        lands in that company's top {{ "%g"|format(100 - percentile) }}%, so noisy tickers
+        don't drown out quiet ones.</p>
+      <div class="glass">
+        <div class="t">TSLA ▲ above baseline</div>
+        <div class="m">score 1.34 vs cut 1.21 · 10 mentions · 15-minute window</div>
+      </div>
+    </div>
+    <p class="sub" style="font-size:13px">Kafka · Flink · FinBERT · Redis, or all of it in one process.</p>
+  </section>
+  <main class="auth-form">
+    <div class="box">
+      {% block form %}{% endblock %}
+    </div>
+  </main>
+</div>
+{% endblock %}
+{% block scripts %}<script src="/static/app.js" data-init="chrome"></script>{% endblock %}

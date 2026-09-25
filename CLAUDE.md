@@ -1,6 +1,24 @@
 # RiskRadar — session handoff (2026-09-25, public-demo release)
 
-## TL;DR (latest)
+## UI redesign (latest)
+
+- Stripe-style UI: `static/app.css` is one token-driven design system;
+  landing (animated gradient hero, live preview, animated pipeline SVG, live
+  baseline histogram, count-up counters, engineering band), app shell for
+  dashboard/settings/onboarding (`templates/_app.html`), split auth pages
+  (`_auth.html`). Motion is off under prefers-reduced-motion.
+- Charts are hand-built SVG in `static/app.js` (sparkline with cut line +
+  crosshair tooltip + keyboard arrows; histogram with per-bar hover). All
+  server data goes through esc()/textContent/safeUrl(); CSP still script-src 'self'.
+- New data: `hist:<ticker>` capped list (96 windows) written in
+  `stages.write_features`; `stats:*` counters; public cached
+  `GET /api/public/overview` (`webapp/src/insights.py`, no user data);
+  `/api/headlines?relevant=true`. Standalone backfills `hist:*` from
+  `feat:<ticker>:<window_end>` keys on start, so an upgrade shows history at once.
+- Also fixed: double-encoded feed titles ("&amp;") now decoded at ingestion;
+  syndicated duplicate headlines listed once; alerts store `alert_score`.
+
+## TL;DR (public demo)
 
 - **Public demo target:** `https://risk-radar.20.25.227.252.sslip.io` on the
   owner's shared Azure VM (also hosts podcast-qna on :3000; do not touch it).
@@ -29,7 +47,7 @@
   real DynamoDB tables (dynamodb-local `-sharedDb` ignores the access key) ->
   `TABLE_PREFIX`, tests use `rrtest_`; undeclared `httpx` test dep; feed reads
   unbounded (5 MB cap); README linked a nonexistent deploy/aws/NOTES.md.
-- Tests: **334**, table tests parametrized over SQLite (always) and DynamoDB
+- Tests: **346**, table tests parametrized over SQLite (always) and DynamoDB
   Local (when reachable). `.venv/bin/python -m pytest tests/ -o addopts=""`.
 - Gotchas: Ubuntu 24.04 is Python 3.12 and `finvader==1.0.4` requires <3.12
   (marker in services/standalone/requirements.txt). `riskcore` is a regular
