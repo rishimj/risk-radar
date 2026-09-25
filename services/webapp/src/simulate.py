@@ -24,7 +24,7 @@ import logging
 
 from riskcore import config, kafka
 from riskcore.entities import COMPANIES
-from riskcore.models import NewsArticle, iso, utcnow
+from riskcore.models import SIMULATED_SOURCE, NewsArticle, iso, utcnow
 
 log = logging.getLogger("simulate")
 
@@ -72,7 +72,7 @@ def build_articles(ticker: str) -> Dict[str, List[NewsArticle]]:
             article_id=f"sim-{ticker}-{int(now.timestamp())}-{i}",
             title=template.format(name=name),
             url=f"https://riskradar.local/simulated/{ticker}/{int(now.timestamp())}/{i}",
-            source="RiskRadar (simulated)",
+            source=SIMULATED_SOURCE,
             published_at=iso(now),
             feed="simulate",
         )
@@ -90,7 +90,7 @@ def build_articles(ticker: str) -> Dict[str, List[NewsArticle]]:
             article_id=f"sim-filler-{int(now.timestamp())}-{i}",
             title=template.format(name=filler_name),
             url=f"https://riskradar.local/simulated/filler/{int(now.timestamp())}/{i}",
-            source="RiskRadar (simulated)",
+            source=SIMULATED_SOURCE,
             published_at=iso(filler_ts),
             feed="simulate",
         )
@@ -109,7 +109,9 @@ def run(redis_client, ticker: str) -> Dict:
         raise ValueError(f"unknown ticker {ticker}")
 
     # Without this a second demo inside the cooldown would silently do nothing.
-    alerting.clear_cooldown(redis_client, ticker)
+    # Only the SIMULATED cooldown: a visitor must not be able to reset the
+    # cooldown that throttles real alerts.
+    alerting.clear_cooldown(redis_client, ticker, simulated=True)
 
     batches = build_articles(ticker)
 

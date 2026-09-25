@@ -3,6 +3,13 @@ name: riskradar
 # Arch note: every image below builds native on arm64 (M-series) EXCEPT the Flink
 # images, which are pinned to linux/amd64 in flink/Dockerfile — PyFlink publishes
 # no linux/aarch64 wheel at any version. On x86_64 (t3.xlarge) everything is native.
+#
+# Two interchangeable stream engines, selected by compose profile. Run exactly
+# ONE: both consume news.raw, so running both double-counts every window.
+#   --profile flink   flink-jobmanager + flink-taskmanager + flink-submit  (~2.5GB, amd64)
+#   --profile lite    processor: the same topology in one Python process  (~100MB, native)
+# `make demo` uses flink, `make demo-lite` uses lite. Everything without a
+# profile (kafka, redis, dynamo, enrichment, ingestion, webapp) runs under both.
 
 x-common-env: &common-env
   KAFKA_BOOTSTRAP: kafka:9092
@@ -53,6 +60,9 @@ services:
   # One-shot: create topics explicitly with 1 partition so they show up in Kafka UI
   # before any traffic, and so partition count is deterministic (the Flink job runs
   # parallelism 1 to match).
+  # Keep the kafka-topics call on ONE line: compose word-splits `command` itself,
+  # and a backslash continuation inside the quoted string does not survive it
+  # (it ran `--create` as its own command, so no topic was ever created here).
   kafka-init:
     image: apache/kafka:3.7.0
     depends_on:
@@ -61,8 +71,7 @@ services:
     command: |
       "
       for t in news.raw news.enriched; do
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
-          --create --if-not-exists --topic $$t --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic $$t --partitions 1 --replication-factor 1
       done
       /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list
       "
@@ -171,6 +180,7 @@ services:
       SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       FLINK_URL: http://flink-jobmanager:8081
+      PROCESSOR_URL: http://processor:8083
     restart: unless-stopped
 
   # Populates each ticker's baseline from the last 24h of real news so the first
@@ -188,6 +198,7 @@ services:
     restart: "no"
 
   flink-jobmanager:
+    profiles: ["flink"]
     build:
       context: .
       dockerfile: flink/Dockerfile
@@ -213,6 +224,7 @@ services:
     restart: unless-stopped
 
   flink-taskmanager:
+    profiles: ["flink"]
     build:
       context: .
       dockerfile: flink/Dockerfile
@@ -241,6 +253,7 @@ services:
   # One-shot real cluster submission via the Flink CLI. The old repo's submit_job.py
   # ran an embedded mini-cluster instead, which is why its 8081 UI was always empty.
   flink-submit:
+    profiles: ["flink"]
     build:
       context: .
       dockerfile: flink/Dockerfile
@@ -255,6 +268,30 @@ services:
       -py /opt/riskradar/job/news_job.py
       -pyexec python3 -pyclientexec python3
     restart: "no"
+
+  # The lite engine: flink/job/news_job.py's topology as one Python process.
+  # Shares every outcome-deciding line with the Flink job via riskcore.stages;
+  # see services/processor/src/engine.py for how Flink's event-time rules are
+  # mirrored. Trade-off: window state is in memory, not checkpointed.
+  processor:
+    profiles: ["lite"]
+    build:
+      context: .
+      dockerfile: services/processor/Dockerfile
+    depends_on:
+      kafka: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      enrichment: {condition: service_healthy}
+    ports:
+      - "8083:8083"
+    environment:
+      <<: *common-env
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8083/healthz')\" || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
 
 volumes:
   kafka-data:

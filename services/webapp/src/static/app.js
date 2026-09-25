@@ -5,6 +5,8 @@ const RiskRadar = (() => {
   "use strict";
 
   const $ = (sel) => document.querySelector(sel);
+  // Feed links are third-party data; only http(s) may become an href.
+  const safeUrl = (u) => (/^https?:\/\//i.test(String(u ?? "")) ? String(u) : "#");
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -41,14 +43,15 @@ const RiskRadar = (() => {
 
   /* ---- status pills: icon + label, never colour alone ---- */
   function renderStatus(data) {
-    const order = [["kafka", "Kafka"], ["flink", "Flink"], ["enrichment", "Enrichment"], ["redis", "Redis"]];
+    const order = [["kafka", "Kafka"], ["flink", "Stream"], ["enrichment", "Enrichment"], ["redis", "Redis"]];
     $("#status").innerHTML = order.map(([key, label]) => {
       const s = data[key] || { ok: false, detail: "unknown" };
+      label = s.label || label;
       const cls = s.ok ? "ok" : "bad";
       const ico = s.ok ? "✓" : "✕";
       return `<span class="pill ${cls}" title="${esc(s.detail)}">
         <span class="dot"></span><span class="ico">${ico}</span>
-        <b>${label}</b> ${esc(s.detail)}</span>`;
+        <b>${esc(label)}</b> ${esc(s.detail)}</span>`;
     }).join("");
     $("#updated").textContent = `updated ${new Date().toLocaleTimeString()}`;
   }
@@ -68,11 +71,14 @@ const RiskRadar = (() => {
       const risk = r.risk_score;
       const hasRisk = risk !== null && risk !== undefined;
       const cut = r.baseline;
-      const over = hasRisk && cut !== null && cut !== undefined && risk > cut;
+      // The cut is in uncapped alert-score units (0..1.875); compare like with
+      // like. pct() clamps, so a cut above 1 pins the marker to the gauge end.
+      const score = r.alert_score ?? risk;
+      const over = hasRisk && cut !== null && cut !== undefined && score > cut;
 
       const cutMark = (cut !== null && cut !== undefined)
         ? `<span class="cut" style="left:calc(${pct(cut)} - 1px)"
-             title="alert cut ${cut.toFixed(3)}"></span>` : "";
+             title="alert cut ${cut.toFixed(3)} (uncapped score)"></span>` : "";
 
       const state = !r.baseline_ready
         ? `<span class="warming">baseline warming up
@@ -83,7 +89,7 @@ const RiskRadar = (() => {
 
       const headline = r.top_headline
         ? (r.top_url
-            ? `<a class="headline" href="${esc(r.top_url)}" target="_blank" rel="noopener">${esc(r.top_headline)}</a>`
+            ? `<a class="headline" href="${esc(safeUrl(r.top_url))}" target="_blank" rel="noopener noreferrer">${esc(r.top_headline)}</a>`
             : `<span class="headline">${esc(r.top_headline)}</span>`)
         : `<span class="headline"></span>`;
 
@@ -113,7 +119,7 @@ const RiskRadar = (() => {
         <td class="num">${r.baseline?.toFixed(3) ?? "—"}</td>
         <td class="num">${r.sentiment_score?.toFixed(2) ?? "—"}</td>
         <td class="num">${r.total_mentions ?? 0}</td>
-        <td>${r.baseline_ready ? (r.risk_score > r.baseline ? "above baseline" : "normal")
+        <td>${r.baseline_ready ? ((r.alert_score ?? r.risk_score) > r.baseline ? "above baseline" : "normal")
                                : `warming (${r.baseline_samples}/${r.min_samples})`}</td>
       </tr>`).join("");
   }
@@ -129,7 +135,7 @@ const RiskRadar = (() => {
       <li>
         ${chip(h.sentiment)}
         <div style="min-width:0">
-          <a href="${esc(h.url)}" target="_blank" rel="noopener">${esc(h.title)}</a>
+          <a href="${esc(safeUrl(h.url))}" target="_blank" rel="noopener noreferrer">${esc(h.title)}</a>
           <div class="meta">
             ${esc(h.source || "")} · ${ago(h.published_at)}
             <span class="tickers">${(h.companies || [])
@@ -149,6 +155,7 @@ const RiskRadar = (() => {
       return;
     }
     const slack = { sent: "delivered", failed: "failed", no_webhook: "not configured",
+                    unverified: "not verified", simulated: "not sent (simulated)",
                     not_delivered: "—", unknown: "—" };
     body.innerHTML = rows.map((a) => `
       <tr>
@@ -235,6 +242,8 @@ const RiskRadar = (() => {
       return res;
     };
 
+    if (!$("#save-slack")) return;                 // guest accounts have no Slack card
+
     $("#save-slack").addEventListener("click", async () => {
       const msg = $("#slack-msg");
       try { const r = await saveSlack();
@@ -255,5 +264,13 @@ const RiskRadar = (() => {
     });
   }
 
-  return { initDashboard, initOnboarding };
+  const api_ = { initDashboard, initOnboarding };
+
+  // Pages select their entry point with <script data-init="...">: the CSP
+  // allows no inline script, so there is nowhere else to call it from.
+  const init = document.currentScript && document.currentScript.dataset.init;
+  if (init === "dashboard") initDashboard();
+  else if (init === "onboarding") initOnboarding();
+
+  return api_;
 })();

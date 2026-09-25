@@ -18,7 +18,8 @@ dependencies = [
 # against all five live sources). One less thing to break in a fresh image.
 
 [project.optional-dependencies]
-test = ["pytest>=7.4", "fakeredis>=2.21"]
+# httpx: fastapi.testclient needs it; collection hard-fails without it.
+test = ["pytest>=7.4", "fakeredis>=2.21", "httpx>=0.27"]
 
 [tool.setuptools.packages.find]
 where = ["."]

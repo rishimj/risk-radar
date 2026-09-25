@@ -124,7 +124,7 @@ def test_fan_out_only_delivers_to_subscribers_of_that_ticker(features):
     calls = []
 
     subs = [
-        {"user_id": "u1", "slack_webhook_url": "http://hook/u1"},
+        {"user_id": "u1", "slack_webhook_url": "http://hook/u1", "slack_verified_at": "t"},
         {"user_id": "u2", "slack_webhook_url": ""},          # no slack configured
     ]
     with patch("riskcore.alerting.persist_alert") as persist, \
@@ -134,7 +134,8 @@ def test_fan_out_only_delivers_to_subscribers_of_that_ticker(features):
         stats = alerting.fan_out(alert)
 
     persist.assert_called_once()
-    assert stats == {"subscribers": 2, "sent": 1, "failed": 0, "no_webhook": 1}
+    assert stats == {"subscribers": 2, "sent": 1, "failed": 0, "no_webhook": 1,
+                     "unverified": 0, "simulated": 0}
     assert ("u1", "sent") in calls
     assert ("u2", "no_webhook") in calls
 
@@ -154,12 +155,52 @@ def test_failed_slack_still_records_a_delivery_row(features):
     calls = []
     with patch("riskcore.alerting.persist_alert"), \
          patch("riskcore.alerting.subscribers_for",
-               return_value=[{"user_id": "u1", "slack_webhook_url": "http://hook"}]), \
+               return_value=[{"user_id": "u1", "slack_webhook_url": "http://hook",
+                              "slack_verified_at": "t"}]), \
          patch("riskcore.alerting.record_delivery", side_effect=lambda a, u, s: calls.append(s)), \
-         patch("riskcore.alerting.send_to_slack", return_value=False):
+         patch("riskcore.alerting.send_to_slack", return_value=False), \
+         patch("riskcore.alerting.unverify_webhook") as unverify:
         stats = alerting.fan_out(alert)
     assert calls == ["failed"]
     assert stats["failed"] == 1
+    unverify.assert_called_once_with("u1")          # not retried on every future alert
+
+
+def _fan_out_with(alert, subs):
+    sent, calls = [], []
+    with patch("riskcore.alerting.persist_alert"), \
+         patch("riskcore.alerting.subscribers_for", return_value=subs), \
+         patch("riskcore.alerting.record_delivery",
+               side_effect=lambda a, u, s: calls.append((u["user_id"], s))), \
+         patch("riskcore.alerting.send_to_slack",
+               side_effect=lambda hook, a: sent.append(hook) or True):
+        stats = alerting.fan_out(alert)
+    return stats, sent, calls
+
+
+def test_simulated_alerts_never_reach_slack(features):
+    """Anyone, including anonymous guests, can press Simulate. It must not be a
+    way to post into other people's Slack workspaces."""
+    subs = [{"user_id": "u1", "slack_webhook_url": "https://hooks.slack.com/services/T/B/x",
+             "slack_verified_at": "t"}]
+    stats, sent, calls = _fan_out_with(build_alert(features, 0.4, source="simulated"), subs)
+    assert sent == [] and calls == [("u1", "simulated")]
+
+
+def test_unverified_webhooks_are_not_called(features):
+    """A bogus hook must not cost the pipeline thread retries and timeouts."""
+    subs = [{"user_id": "u1", "slack_webhook_url": "https://hooks.slack.com/services/T/B/x",
+             "slack_verified_at": ""}]
+    stats, sent, calls = _fan_out_with(build_alert(features, 0.4), subs)
+    assert sent == [] and calls == [("u1", "unverified")]
+
+
+def test_simulated_and_real_cooldowns_are_independent(redis_client):
+    mark_sent(redis_client, "TSLA", simulated=True)
+    assert in_cooldown(redis_client, "TSLA") is False
+    mark_sent(redis_client, "TSLA")
+    clear_cooldown(redis_client, "TSLA", simulated=True)
+    assert in_cooldown(redis_client, "TSLA") is True
 
 
 def _alert() -> Alert:

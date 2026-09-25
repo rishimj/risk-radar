@@ -1,7 +1,13 @@
-"""DynamoDB access.
+"""Table access: DynamoDB, or SQLite for the single-node deployment.
 
-The ONLY difference between local and AWS is DYNAMO_ENDPOINT_URL: set it and
-boto3 talks to dynamodb-local, unset it and boto3 uses the EC2 instance role.
+DB_BACKEND=dynamodb (default): the ONLY difference between local and AWS is
+DYNAMO_ENDPOINT_URL. Set it and boto3 talks to dynamodb-local; unset it and
+boto3 uses the EC2 instance role.
+
+DB_BACKEND=sqlite: riskcore.sqlitedb, a file-backed stand-in for the handful of
+Table calls this codebase makes. No JVM, no credentials, no bill.
+
+TABLE_PREFIX is prepended to every physical table name, on both backends.
 """
 from typing import Any, Dict, List, Optional
 import logging
@@ -80,6 +86,15 @@ TABLES = {
     },
 }
 
+# Attributes that must be unique per table. Enforced by the SQLite backend (a
+# unique index); DynamoDB has no equivalent, so there it remains check-then-put.
+UNIQUE_ATTRIBUTES = {"users": ["email"]}
+
+
+class UniqueViolation(Exception):
+    """Raised by put_item when a unique attribute (see UNIQUE_ATTRIBUTES) collides."""
+
+
 _resource = None
 
 
@@ -96,12 +111,45 @@ def resource():
     return _resource
 
 
+def _physical(name: str) -> str:
+    return f"{config.TABLE_PREFIX}{name}"
+
+
+def _sqlite():
+    from . import sqlitedb
+    return sqlitedb.database(config.SQLITE_PATH)
+
+
+class _UniqueTable:
+    """Translates the SQLite backend's violation into db.UniqueViolation."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def put_item(self, **kwargs):
+        from . import sqlitedb
+        try:
+            return self._inner.put_item(**kwargs)
+        except sqlitedb.UniqueViolation as exc:
+            raise UniqueViolation(str(exc)) from None
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 def table(name: str):
-    return resource().Table(name)
+    if config.DB_BACKEND == "sqlite":
+        return _UniqueTable(_sqlite().table(_physical(name), TABLES[name]))
+    return resource().Table(_physical(name))
 
 
 def ensure_tables() -> List[str]:
     """Idempotently create all four tables. Safe to call from every container."""
+    if config.DB_BACKEND == "sqlite":
+        sq = _sqlite()
+        return [name for name, spec in TABLES.items()
+                if sq.create_table(_physical(name), spec, UNIQUE_ATTRIBUTES.get(name, ()))]
+
     created = []
     client = resource().meta.client
     existing = set()
@@ -111,6 +159,7 @@ def ensure_tables() -> List[str]:
         log.warning("could not list tables: %s", exc)
 
     for name, spec in TABLES.items():
+        name = _physical(name)
         if name in existing:
             continue
         params = dict(spec)

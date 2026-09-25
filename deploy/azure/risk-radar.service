@@ -1,0 +1,56 @@
+# RiskRadar single-node service. Installed by deploy/azure/install.sh.
+# Everything lives in /srv/risk-radar; the app listens on 127.0.0.1:3001 only
+# and Caddy is the sole public entry point.
+[Unit]
+Description=RiskRadar (single-node: web + ingestion + stream engine)
+After=network-online.target risk-radar-redis.service
+Wants=network-online.target
+Requires=risk-radar-redis.service
+
+[Service]
+Type=simple
+User=riskradar
+Group=riskradar
+WorkingDirectory=/srv/risk-radar
+EnvironmentFile=/srv/risk-radar/risk-radar.env
+Environment=HOST=127.0.0.1 PORT=3001
+Environment=HOME=/srv/risk-radar PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+Environment=HF_HOME=/srv/risk-radar/models TORCH_HOME=/srv/risk-radar/models XDG_CACHE_HOME=/srv/risk-radar/data/cache
+# One BLAS thread and two malloc arenas: this shares a 2-vCPU burstable VM.
+Environment=OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 TORCH_THREADS=1 MALLOC_ARENA_MAX=2
+ExecStart=/srv/risk-radar/venv/bin/python /srv/risk-radar/app/services/standalone/riskradar_node.py
+Restart=always
+RestartSec=5
+
+# ---- resource ceilings: never starve the other app on this VM ----
+MemoryMax=1500M
+MemoryHigh=1300M
+MemorySwapMax=256M
+CPUQuota=100%
+TasksMax=128
+
+# ---- sandboxing ----
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/srv/risk-radar/data /srv/risk-radar/models
+PrivateTmp=true
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

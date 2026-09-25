@@ -93,12 +93,64 @@ def test_single_mildly_negative_headline_would_clear_the_old_threshold():
 def test_build_features_surfaces_most_negative_headline():
     ts = datetime(2026, 7, 27, 12, 0, tzinfo=timezone.utc)
     mentions = [
-        CompanyMention("TSLA", "a", "Tesla beats delivery estimates", "u1", "s", 0.6, "primary", 1),
-        CompanyMention("TSLA", "b", "Tesla recalls 400k vehicles", "u2", "s", -0.9, "primary", 2),
-        CompanyMention("TSLA", "c", "Tesla opens new plant", "u3", "s", 0.2, "primary", 3),
+        CompanyMention("TSLA", "a", "Tesla beats delivery estimates", "https://x/u1", "s", 0.6, "primary", 1),
+        CompanyMention("TSLA", "b", "Tesla recalls 400k vehicles", "https://x/u2", "s", -0.9, "primary", 2),
+        CompanyMention("TSLA", "c", "Tesla opens new plant", "https://x/u3", "s", 0.2, "primary", 3),
     ]
     feats = build_features("TSLA", mentions, ts, ts)
     assert feats.top_headline == "Tesla recalls 400k vehicles"
-    assert feats.top_url == "u2"
+    assert feats.top_url == "https://x/u2"
     assert feats.total_mentions == 3
     assert feats.neg_count == 1 and feats.pos_count == 2
+
+
+# -- saturation: the reason no alert could ever fire ------------------------
+def test_alert_score_is_the_uncapped_formula():
+    agg = Aggregation()
+    for _ in range(20):
+        agg.add(-1.0)
+    # 1.0 sentiment risk x 1.5 volume x 1.25 all-negative bias
+    assert agg.alert_score() == pytest.approx(1.875)
+    assert agg.risk() == 1.0
+
+
+def test_alert_score_equals_risk_below_the_cap():
+    agg = Aggregation()
+    agg.add(0.4)
+    agg.add(0.2)
+    assert agg.alert_score() == agg.risk() < 1.0
+
+
+def test_alert_score_ranks_windows_the_cap_would_tie():
+    """A 3-headline dip and a 10-headline crisis both read 1.0 on the gauge.
+
+    Only the uncapped score can tell them apart, which is what lets a real
+    crisis clear a p99 that mild dips have already pushed to the cap.
+    """
+    dip = Aggregation()
+    for _ in range(3):
+        dip.add(-0.9)
+    crisis = Aggregation()
+    for _ in range(10):
+        crisis.add(-0.93)
+    assert dip.risk() == crisis.risk() == 1.0
+    assert crisis.alert_score() > dip.alert_score() > 1.0
+
+
+def test_build_features_carries_both_scores():
+    ms = [CompanyMention(ticker="TSLA", article_id=str(i), title="t", url="u",
+                         source="s", sentiment=-0.95, role="primary", event_ts=0)
+          for i in range(8)]
+    t = datetime(2026, 7, 27, tzinfo=timezone.utc)
+    feats = build_features("TSLA", ms, t, t)
+    assert feats.risk_score == 1.0
+    assert feats.alert_score > 1.0
+
+
+def test_features_written_before_alert_score_existed_fall_back():
+    from riskcore.models import RiskFeatures
+    old = RiskFeatures.from_dict({
+        "ticker": "TSLA", "window_start": "a", "window_end": "b", "risk_score": 0.7,
+        "sentiment_score": -0.2, "neg_count": 2, "pos_count": 0, "total_mentions": 2,
+    })
+    assert old.alert_score == 0.7

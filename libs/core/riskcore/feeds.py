@@ -30,7 +30,7 @@ import xml.etree.ElementTree as ET
 
 from . import config
 from .entities import ticker_query
-from .models import NewsArticle, iso, utcnow
+from .models import NewsArticle, iso, safe_url, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -111,10 +111,18 @@ def article_id(url: str) -> str:
     return hashlib.sha1(url.encode()).hexdigest()
 
 
-def fetch_url(url: str, timeout: float = 25.0) -> bytes:
+MAX_FEED_BYTES = 5 * 1024 * 1024       # real feeds are ~50-300 KB
+
+
+def fetch_url(url: str, timeout: float = 25.0, max_bytes: int = MAX_FEED_BYTES) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": config.USER_AGENT})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+        # Bounded read: an upstream serving an endless body must not be able
+        # to exhaust this process's memory.
+        body = resp.read(max_bytes + 1)
+    if len(body) > max_bytes:
+        raise OSError(f"feed larger than {max_bytes} bytes: {url}")
+    return body
 
 
 def _items(root: ET.Element) -> List[ET.Element]:
@@ -158,7 +166,7 @@ def parse_items(raw: bytes, feed: Feed, cutoff: datetime) -> List[NewsArticle]:
 
     out: List[NewsArticle] = []
     for node in _items(root):
-        url = _link(node)
+        url = safe_url(_link(node))
         title = clean_title(_text(node, "title", f"{_ATOM}title"))
         if not url or not title:
             continue

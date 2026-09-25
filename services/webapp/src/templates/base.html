@@ -15,7 +15,9 @@
       {% if user %}
         <a href="/dashboard">Dashboard</a>
         <a href="/settings">Settings</a>
-        <a href="/logout">Sign out</a>
+        <form method="post" action="/logout" class="inline-form">
+          <button type="submit" class="linklike">Sign out</button>
+        </form>
       {% else %}
         <a href="/login">Sign in</a>
         <a class="btn" href="/signup">Get started</a>
@@ -29,7 +31,7 @@
 </main>
 
 <footer class="wrap">
-  Kafka · PyFlink · FinBERT · Redis · DynamoDB —
+  {{ stack_label }} —
   alerting is relative to each ticker's own 24h baseline, not a fixed threshold.
 </footer>
 

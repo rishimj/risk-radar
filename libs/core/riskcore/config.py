@@ -36,6 +36,17 @@ DYNAMO_ENDPOINT_URL = os.getenv("DYNAMO_ENDPOINT_URL") or None  # unset on AWS
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
+# "dynamodb" (default; DynamoDB Local or AWS) or "sqlite" (single-node deploy).
+DB_BACKEND = os.getenv("DB_BACKEND", "dynamodb").strip().lower()
+SQLITE_PATH = os.getenv("SQLITE_PATH", "riskradar.db")
+# Prepended to every table name. The test suite sets its own so it can never
+# truncate a running stack's tables, which share dynamodb-local's -sharedDb file.
+TABLE_PREFIX = os.getenv("TABLE_PREFIX", "")
+
+# "kafka" (default) or "inproc": the standalone runner swaps Kafka for an
+# in-process queue (see riskcore.kafka.set_local_sink).
+BUS = os.getenv("BUS", "kafka").strip().lower()
+
 TOPIC_RAW = os.getenv("TOPIC_RAW", "news.raw")
 TOPIC_ENRICHED = os.getenv("TOPIC_ENRICHED", "news.enriched")
 
@@ -69,8 +80,9 @@ MIN_MENTIONS_FOR_ALERT = _int("MIN_MENTIONS_FOR_ALERT", 2)
 MIN_BASELINE_SAMPLES = _int("MIN_BASELINE_SAMPLES", 50)
 BASELINE_WINDOW_HOURS = _int("BASELINE_WINDOW_HOURS", 24)
 ALERT_COOLDOWN_MINUTES = _int("ALERT_COOLDOWN_MINUTES", 10)
-SLACK_MAX_RETRIES = _int("SLACK_MAX_RETRIES", 3)
-SLACK_TIMEOUT_SECONDS = _float("SLACK_TIMEOUT_SECONDS", 10.0)
+# Delivery runs on the pipeline thread, so its worst case is kept small.
+SLACK_MAX_RETRIES = _int("SLACK_MAX_RETRIES", 2)
+SLACK_TIMEOUT_SECONDS = _float("SLACK_TIMEOUT_SECONDS", 5.0)
 
 # ---- severity bands (ported verbatim from alerting.py:58-63) ----
 SEVERITY_HIGH = _float("SEVERITY_HIGH", 0.8)

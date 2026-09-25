@@ -1,16 +1,125 @@
-# RiskRadar — session handoff (2026-07-27)
+# RiskRadar — session handoff (2026-09-25, public-demo release)
 
-Status of a session that took the repo from "compose stack never started" to a
-running end-to-end pipeline on an M-series MacBook (16 GB RAM, Docker VM 7.7 GB).
+## TL;DR (latest)
 
-## TL;DR
+- **Public demo target:** `https://risk-radar.20.25.227.252.sslip.io` on the
+  owner's shared Azure VM (also hosts podcast-qna on :3000; do not touch it).
+  Deploy from the owner's Mac (SSH key + IP allowlist live there):
+  `VM=<ssh-user>@<vm-ip> SITE_HOST=risk-radar.<vm-ip>.sslip.io deploy/azure/deploy.sh`
+  (connection details are the owner's, kept out of the repo).
+  The kit was verified end to end in an Ubuntu 24.04 **systemd** container
+  mimicking the VM (Caddy from its apt repo, a podcast-qna stand-in): install,
+  Caddy append + validate + reload, restart survival, podcast-qna untouched,
+  `systemd-analyze security` 3.0. The real VM deploy is the owner's step.
+- **`services/standalone/riskradar_node.py`**: the whole pipeline in one process
+  (webapp + ingestion thread + lite StreamEngine + in-process FinBERT), Kafka
+  replaced by `riskcore.kafka.set_local_sink` -> queue, DynamoDB by
+  `DB_BACKEND=sqlite` (`riskcore/sqlitedb.py`). ~0.8-0.9 GB RSS with FinBERT,
+  seeds baselines with the SAME model at startup (~40 s; alerting silent until then).
+- **Public hardening** (`services/webapp/src/guard.py`, app.py): rate limits
+  (per IP/user/email + 300 accounts/day site-wide + one simulate per 240 s
+  site-wide), CSRF via Origin/Sec-Fetch-Site (Origin "null" refused) + JSON-only
+  /api writes, strict CSP (no inline script: pages use `<script data-init>`),
+  body cap, docs off, guest demo (`POST /demo`, no password, no Slack, purged
+  after 48 h), exact Slack webhook regex, clamped list limits.
+  `tests/test_security.py` pins them.
+- **Bugs fixed this round:** simulated alerts were tagged "live" and simulated
+  windows entered (poisoned) the baseline; `javascript:` feed URLs reached
+  href attributes (XSS); `pytest` against a running stack truncated the app's
+  real DynamoDB tables (dynamodb-local `-sharedDb` ignores the access key) ->
+  `TABLE_PREFIX`, tests use `rrtest_`; undeclared `httpx` test dep; feed reads
+  unbounded (5 MB cap); README linked a nonexistent deploy/aws/NOTES.md.
+- Tests: **334**, table tests parametrized over SQLite (always) and DynamoDB
+  Local (when reachable). `.venv/bin/python -m pytest tests/ -o addopts=""`.
+- Gotchas: Ubuntu 24.04 is Python 3.12 and `finvader==1.0.4` requires <3.12
+  (marker in services/standalone/requirements.txt). `riskcore` is a regular
+  install in venvs: after changing libs/core, reinstall it (install.sh
+  force-reinstalls every deploy). Int8-quantizing FinBERT was measured and
+  rejected: no RSS saving, scores shift (-0.95 -> -0.77).
 
-`make demo` now works. Six real bugs fixed, all committed to the working tree
-(uncommitted — see `git status`). The pipeline ingests real news, enriches with
-FinBERT, computes sliding-window risk, and writes baselines.
+---
 
-**One thing is still broken and needs YOUR decision: no alert can fire.** See
-"Open decision" below. Everything else is verified working.
+# Earlier handoff (2026-09-25, engines)
+
+## TL;DR (engines)
+
+- **Alerts now fire end to end, on both engines.** The open decision below was
+  resolved with the "un-cap" option: the baseline stores `alert_score`, the
+  risk formula without the 1.0 cap. The 0-1 `risk_score` gauge and severity
+  bands are unchanged.
+- **New lightweight engine.** `make demo-lite` runs `services/processor`, the
+  Flink topology as one Python process (~62 MB RSS vs ~960 MB for JM+TM).
+  `make demo` still runs Flink. Run ONE at a time (both consume `news.raw`).
+  Engines are compose **profiles** (`flink`, `lite`): a bare
+  `docker compose up` now starts NO engine. Use the make targets or
+  `docker compose --profile flink|lite up -d` (`deploy/aws/user-data.sh` updated).
+- **Two more real bugs fixed:** #7 PyFlink dropped the event-time assigner,
+  #8 `kafka-init` never created a topic. Details below.
+- Verified in a Linux x86_64 container (Flink native, not Rosetta): simulate
+  -> alert in ~0.4 s (lite) and ~3.5 s (Flink). Not re-verified on the Mac.
+
+### Resolution of the open decision (no alert could fire)
+
+Chose un-capping, the principled option, over `>=` or a lower percentile:
+`Aggregation.alert_score()` is the uncapped formula (0 .. 1.875) and
+`risk()` is `min(1.0, alert_score())`. `RiskFeatures.alert_score` carries it;
+`BaselineStore.record/evaluate` (via `riskcore.stages`) and `tools/replay.py`
+use it, so calibration, seeding and live alerting stay in one unit. Old
+payloads without the field fall back to `risk_score`. Dashboard compares
+`alert_score` against the cut (`services/webapp/src/static/app.js`).
+Measured on a fresh VADER seed: 15/258 TSLA windows would have been capped
+(p99 = 1.0, unalertable); uncapped p99 = 1.057, and the simulated crisis
+scores 1.806. Self-damping still holds: after several identical crises within
+minutes, p99 reached 1.806 and a further identical one correctly did not fire.
+
+### Bug 7: PyFlink silently dropped `MentionTimestampAssigner`
+
+`WatermarkStrategy.with_idleness()` returns `WatermarkStrategy(j_strategy)`,
+a new wrapper without the Python-side assigner. The job called it AFTER
+`with_timestamp_assigner`, so windows ran on **Kafka produce time**, not
+`published_at`. Symptom: the window operator's watermark was exactly
+`kafka_ts - 30001`, and simulate's +4 min filler never closed the crisis
+window (it only closed when the next ingestion sweep's produce time caught up,
+which is why earlier sessions saw features "eventually"). Reproduced in the
+PyFlink 1.20.1 image with a 20-line job (bounded source -> "Record has Java
+Long.MIN_VALUE timestamp"); reordered, windows land at the right event times.
+Pinned statically by `tests/test_flink_job.py` (no PyFlink on the host).
+
+### Bug 8: `kafka-init` never created a topic
+
+Compose word-splits `command:` itself, and the backslash-newline inside the
+quoted string did not survive: log showed `/bin/sh: --create: not found`.
+Topics only existed via broker auto-create. Put on one line.
+
+### Lite engine design (`services/processor/src/engine.py`)
+
+- Outcome logic lives in `libs/core/riskcore/stages.py` and is called by BOTH
+  engines (`enrich_batch`, `write_headline`, `evaluate_and_alert`,
+  `write_features`). The Flink job was refactored to call it.
+- The engine is I/O-free and mirrors Flink's scheduling: flush at
+  `ENRICH_BATCH_SIZE` or `ENRICH_BATCH_TIMEOUT_MS`; watermark
+  `max_ts - delay - 1` advanced after each batch (Flink emits periodically);
+  window late once `end - 1 <= watermark`; fire when `watermark >= end - 1`;
+  alert before baseline write. No processing-time idleness advancement, to
+  match Flink with one input channel. `tests/test_processor.py` pins it.
+- Trade-off: open windows are in memory only. Offsets commit only when the
+  enrichment buffer is empty, so a restart resumes from Kafka (verified: it
+  caught up on 26 articles produced while stopped).
+- Webapp status pill ("Stream") probes lite `/stats`, then Flink.
+
+### Gotchas seen this session
+
+- Consecutive simulates within ~4 min: the previous filler already pushed the
+  watermark 4 min ahead, so the new crisis lands in windows that only close
+  once real news passes that point (next ingestion sweep or two). Identical in
+  both engines; it is the simulate design, not an engine bug.
+- Compose interpolates `${AWS_ACCESS_KEY_ID:-local}` from the SHELL before
+  `.env`. An exported AWS key reaches dynamodb-local, which namespaces by key
+  (and rejects keys with hyphens). Unset it when running locally.
+
+---
+
+# Previous handoff (2026-07-27), kept for history
 
 ## Verified working
 
@@ -73,7 +182,7 @@ FinBERT, computes sliding-window risk, and writes baselines.
    Pth percentile of that ticker's ***prior*** observations." The harness and
    the live job disagreed. The fix makes them agree.
 
-## OPEN DECISION — why no alert fires (needs your call)
+## ~~OPEN DECISION~~ RESOLVED 2026-09-25 (un-capped alert score, see top)
 
 The ordering fix (#6) was necessary but **not sufficient**. Measured, not guessed:
 
@@ -164,8 +273,9 @@ wheel exists) — that emulation is a real cost and cannot be avoided on ARM.
 python3 -m venv .venv
 .venv/bin/pip install -e "libs/core[test]" -r services/webapp/requirements.txt httpx vaderSentiment==3.3.2
 
-.venv/bin/python -m pytest tests/        # expect 186 passed with stack up
-docker compose up -d --build             # ~15 min cold; Flink image builds under emulation
+.venv/bin/python -m pytest tests/        # expect 220 passed with dynamodb-local up
+docker compose --profile flink up -d --build   # ~15 min cold; Flink image builds under emulation
+# or: docker compose --profile lite up -d --build  (no Flink images at all)
 curl -s localhost:8081/jobs/overview     # want "state":"RUNNING"
 curl -s localhost:8082/stats             # want tier:finbert, errors:0
 ```
@@ -190,7 +300,7 @@ docker compose run --rm seed-baseline
 
 ## Still unverified
 
-- **No alert has ever fired end-to-end** (blocked on the open decision above).
+- ~~No alert has ever fired end-to-end~~ (fired on both engines, 2026-09-25).
 - `make calibrate` never run.
 - Long-run soak — organic alerts arriving on their own is the real acceptance
   test, and it has not been done. Only the simulate path was exercised.

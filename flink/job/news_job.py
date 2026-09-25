@@ -7,6 +7,10 @@
       -> key_by(ticker), sliding 15m/3m window, risk scoring
       -> redis features + baseline + alert fan-out
 
+The per-record logic (enrichment call, headline row, alert decision, feature
+write) lives in riskcore.stages and is shared with the pure-Python "lite"
+engine in services/processor, so the two cannot disagree on outcomes.
+
 Three things here are deliberate corrections of the old repo's job, which could
 never have run:
 
@@ -48,7 +52,7 @@ from pyflink.datastream.window import SlidingEventTimeWindows
 from pyflink.common.time import Time
 
 from riskcore import config
-from riskcore.models import CompanyMention, EnrichedArticle, NewsArticle, RiskFeatures
+from riskcore.models import CompanyMention, RiskFeatures
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("news_job")
@@ -111,55 +115,11 @@ class MicroBatchEnrich(KeyedProcessFunction):
             self.timer.clear()
 
     def _flush(self, pending: List[str]) -> Iterable[str]:
+        from riskcore import stages
+
         self.buffer.clear()
-
-        articles = []
-        for raw in pending:
-            try:
-                articles.append(NewsArticle.from_json(raw))
-            except Exception:                          # noqa: BLE001
-                log.warning("undecodable article dropped")
-
-        if not articles:
-            return
-
-        results = self._enrich(articles)
-        for article in articles:
-            payload = results.get(article.article_id)
-            if payload is None:
-                continue
-            enriched = EnrichedArticle(
-                article_id=article.article_id,
-                title=article.title,
-                url=article.url,
-                source=article.source,
-                published_at=article.published_at,
-                sentiment=float(payload.get("sentiment", 0.0)),
-                companies=payload.get("companies", []),
-                model=results.get("__model__", ""),
-                feed=article.feed,
-            )
+        for enriched in stages.enrich_batch(self.session, stages.decode_articles(pending)):
             yield enriched.to_json()
-
-    def _enrich(self, articles: List[NewsArticle]) -> dict:
-        body = {"articles": [
-            {"article_id": a.article_id, "title": a.title, "summary": a.summary}
-            for a in articles
-        ]}
-        try:
-            resp = self.session.post(
-                f"{config.ENRICHMENT_URL}/v1/enrich/batch",
-                json=body, timeout=config.ENRICH_TIMEOUT_SECONDS,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as exc:                       # noqa: BLE001 - never kill the job
-            log.error("enrichment failed for %d articles: %s", len(articles), exc)
-            return {}
-
-        out = {r["article_id"]: r for r in data.get("results", [])}
-        out["__model__"] = data.get("model", "")
-        return out
 
 
 # ===========================================================================
@@ -176,17 +136,8 @@ class HeadlinesWriter:
             if self._redis is None:
                 import redis
                 self._redis = redis.from_url(config.REDIS_URL)
-            from riskcore import headlines
-            doc = json.loads(value)
-            headlines.push(self._redis, {
-                "article_id": doc.get("article_id"),
-                "title": doc.get("title"),
-                "url": doc.get("url"),
-                "source": doc.get("source"),
-                "published_at": doc.get("published_at"),
-                "sentiment": doc.get("sentiment"),
-                "companies": doc.get("companies", []),
-            })
+            from riskcore import stages
+            stages.write_headline(self._redis, json.loads(value))
         except Exception as exc:                       # noqa: BLE001
             log.error("headline write failed: %s", exc)
         return value
@@ -264,18 +215,8 @@ class FeatureWriter:
                 self._redis = redis.from_url(config.REDIS_URL)
                 self._store = BaselineStore(self._redis)
 
-            feats = RiskFeatures.from_json(value)
-            payload = json.dumps(feats.to_dict(), separators=(",", ":"))
-
-            pipe = self._redis.pipeline()
-            pipe.set(f"feat:{feats.ticker}:latest", payload)
-            pipe.setex(f"feat:{feats.ticker}:{feats.window_end}", 7 * 86400, payload)
-            pipe.execute()
-
-            # Every window feeds the baseline, including quiet ones — otherwise
-            # the distribution would only contain spikes and the percentile
-            # would be meaningless.
-            self._store.record(feats.ticker, feats.risk_score)
+            from riskcore import stages
+            stages.write_features(self._redis, self._store, RiskFeatures.from_json(value))
         except Exception as exc:                       # noqa: BLE001
             log.error("feature write failed: %s", exc)
         return value
@@ -302,25 +243,8 @@ class AlertFanout:
                 except Exception as exc:               # noqa: BLE001
                     log.warning("ensure_tables: %s", exc)
 
-            from riskcore import alerting
-
-            feats = RiskFeatures.from_json(value)
-            decision = self._store.evaluate(
-                feats.ticker, feats.risk_score, feats.total_mentions
-            )
-            if not decision.should_alert:
-                return value
-
-            if alerting.in_cooldown(self._redis, feats.ticker):
-                log.info("%s over baseline but in cooldown", feats.ticker)
-                return value
-
-            alert = alerting.build_alert(feats, decision.threshold or 0.0)
-            alerting.fan_out(alert)
-            alerting.mark_sent(self._redis, feats.ticker)
-            log.info("ALERT %s risk=%.3f baseline=%.3f n=%d",
-                     feats.ticker, feats.risk_score, decision.threshold or 0.0,
-                     decision.samples)
+            from riskcore import stages
+            stages.evaluate_and_alert(self._redis, self._store, RiskFeatures.from_json(value))
         except Exception as exc:                       # noqa: BLE001
             log.error("alert fan-out failed: %s", exc)
         return value
@@ -376,10 +300,17 @@ def build_pipeline(env: StreamExecutionEnvironment) -> None:
     watermarked = mentions.assign_timestamps_and_watermarks(
         WatermarkStrategy
         .for_bounded_out_of_orderness(Duration.of_seconds(config.WATERMARK_DELAY_SECONDS))
-        .with_timestamp_assigner(MentionTimestampAssigner())
         # Without idleness the window stalls whenever a quiet stretch stops
         # advancing the watermark — and quiet stretches are normal here.
         .with_idleness(Duration.of_seconds(30))
+        # MUST be the last call in the chain. PyFlink keeps a Python assigner
+        # on the Python wrapper only, and with_idleness() returns a NEW wrapper
+        # around the Java strategy, silently dropping it. In the other order the
+        # job fell back to Kafka record timestamps: windows were keyed on
+        # produce time rather than published_at, disagreeing with the replay
+        # harness, and simulate.py's watermark filler could never close a
+        # window. Pinned by tests/test_flink_job.py.
+        .with_timestamp_assigner(MentionTimestampAssigner())
     ).name("watermarks").uid("watermarks")
 
     features = (

@@ -5,7 +5,7 @@ simulate endpoint are the only producers, and both just need "send a JSON line".
 kafka-python is used rather than confluent-kafka because it is pure Python and
 so installs cleanly on both arm64 and amd64 without a librdkafka build.
 """
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 import json
 import logging
 import threading
@@ -19,6 +19,15 @@ log = logging.getLogger(__name__)
 
 _producer: Optional[KafkaProducer] = None
 _lock = threading.Lock()
+
+# When set, every send goes here instead of Kafka: (topic, value, key) -> None.
+# services/standalone uses it to run the whole pipeline in one process.
+_local_sink: Optional[Callable[[str, str, Optional[str]], None]] = None
+
+
+def set_local_sink(sink: Optional[Callable[[str, str, Optional[str]], None]]) -> None:
+    global _local_sink
+    _local_sink = sink
 
 
 def producer() -> KafkaProducer:
@@ -38,10 +47,19 @@ def producer() -> KafkaProducer:
 
 
 def send(topic: str, value: str, key: Optional[str] = None) -> None:
+    if _local_sink is not None:
+        _local_sink(topic, value, key)
+        return
     producer().send(topic, value=value, key=key)
 
 
 def send_many(topic: str, values: Iterable[str]) -> int:
+    if _local_sink is not None:
+        n = 0
+        for v in values:
+            _local_sink(topic, v, None)
+            n += 1
+        return n
     p = producer()
     n = 0
     for v in values:
@@ -52,7 +70,7 @@ def send_many(topic: str, values: Iterable[str]) -> int:
 
 
 def flush(timeout: float = 30.0) -> None:
-    if _producer is not None:
+    if _local_sink is None and _producer is not None:
         _producer.flush(timeout=timeout)
 
 

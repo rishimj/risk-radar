@@ -20,6 +20,7 @@
     <span id="watchlist-msg" class="note"></span>
   </div>
 
+  {% if not user.is_guest %}
   <div class="card">
     <h2>2 · Slack alerts <span class="note" style="font-weight:400">optional</span></h2>
     <p class="sub">
@@ -34,6 +35,7 @@
     <button id="test-slack">Send test message</button>
     <span id="slack-msg" class="note"></span>
   </div>
+  {% endif %}
 
   <div class="card">
     <h2>3 · You're set</h2>
@@ -48,6 +50,5 @@
 {% endblock %}
 
 {% block scripts %}
-<script src="/static/app.js"></script>
-<script>RiskRadar.initOnboarding();</script>
+<script src="/static/app.js" data-init="onboarding"></script>
 {% endblock %}

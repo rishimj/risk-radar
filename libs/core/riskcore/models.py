@@ -27,6 +27,31 @@ def parse_iso(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+# Source string simulate.py stamps on every synthetic article. Windows containing
+# one are tagged simulated: their alerts say so, and they never enter a baseline.
+SIMULATED_SOURCE = "RiskRadar (simulated)"
+
+
+def safe_url(value) -> str:
+    """Pass through http(s) URLs only.
+
+    Feed links are third-party data that ends up in href attributes. HTML
+    escaping does not neutralise `javascript:` or `data:` URLs, so anything
+    that is not plainly http(s) becomes "" at the point it enters the system.
+    """
+    from urllib.parse import urlsplit
+    if not isinstance(value, str):
+        return ""
+    value = value.strip()
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return ""
+    if parts.scheme.lower() in ("http", "https") and parts.netloc:
+        return value
+    return ""
+
+
 class _JsonMixin:
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -109,6 +134,16 @@ class RiskFeatures(_JsonMixin):
     total_mentions: int
     top_headline: str = ""
     top_url: str = ""
+    # Uncapped risk (0 .. 1.875). Alerting compares THIS against the baseline;
+    # risk_score is min(1.0, alert_score) for display. Defaults to -1 so a
+    # payload written before this field existed falls back to risk_score.
+    alert_score: float = -1.0
+    # True when any mention in the window came from /api/simulate.
+    simulated: bool = False
+
+    def __post_init__(self):
+        if self.alert_score is None or self.alert_score < 0:
+            self.alert_score = self.risk_score
 
 
 @dataclass
