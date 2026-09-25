@@ -57,8 +57,13 @@ dpkg -s redis-server >/dev/null 2>&1 && redis_was_installed=1
 redis_was_active=0
 systemctl is-active --quiet redis-server 2>/dev/null && redis_was_active=1
 export DEBIAN_FRONTEND=noninteractive
+# needrestart (on by default in Ubuntu 24.04) may otherwise restart OTHER
+# services whose libraries an install touched. List only; restart nothing.
+export NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1
 apt-get update -qq
-apt-get install -y -qq python3 python3-venv python3-pip redis-server curl ca-certificates >/dev/null
+# --no-upgrade: packages already present (python3, curl, ...) stay at their
+# current version, so nothing another app relies on moves underneath it.
+apt-get install -y -qq --no-upgrade python3 python3-venv python3-pip redis-server curl ca-certificates >/dev/null
 # Installing redis-server auto-starts a system-wide instance on :6379. RiskRadar
 # does not use it (it runs its own on a unix socket), so if THIS script is what
 # installed the package, turn that default instance back off. If a system Redis

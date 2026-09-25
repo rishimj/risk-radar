@@ -19,6 +19,10 @@ GUEST_DOMAIN = "guest.riskradar.invalid"
 GUEST_WATCHLIST = ["AAPL", "NVDA", "TSLA"]
 
 
+class DuplicateEmail(Exception):
+    pass
+
+
 def create_user(email: str, password_hash: str, guest: bool = False) -> Dict:
     user = {
         "user_id": uuid.uuid4().hex,
@@ -29,7 +33,10 @@ def create_user(email: str, password_hash: str, guest: bool = False) -> Dict:
         "slack_verified_at": "",
         "is_guest": guest,
     }
-    db.table("users").put_item(Item=user)
+    try:
+        db.table("users").put_item(Item=user)
+    except db.UniqueViolation:
+        raise DuplicateEmail(user["email"]) from None
     return user
 
 

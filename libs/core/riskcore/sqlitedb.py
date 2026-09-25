@@ -22,6 +22,10 @@ import re
 import sqlite3
 import threading
 
+class UniqueViolation(Exception):
+    """A put_item would give two items the same value of a unique attribute."""
+
+
 _SET = re.compile(r"^\s*SET\s+(.+)$", re.IGNORECASE | re.DOTALL)
 _ASSIGN = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(:[A-Za-z0-9_]+)\s*$")
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -73,7 +77,7 @@ class Database:
         self.conn.execute("PRAGMA busy_timeout=5000")
         self.specs: Dict[str, Dict] = {}
 
-    def create_table(self, name: str, spec: Dict) -> bool:
+    def create_table(self, name: str, spec: Dict, unique: Iterable[str] = ()) -> bool:
         t = _ident(name)
         with self.lock:
             exists = self.conn.execute(
@@ -90,6 +94,11 @@ class Database:
                 self.conn.execute(
                     f"CREATE INDEX IF NOT EXISTS {idx} "
                     f"ON {t} (json_extract(doc, '$.{_ident(h)}'))"
+                )
+            for attr in unique:
+                self.conn.execute(
+                    f"CREATE UNIQUE INDEX IF NOT EXISTS {_ident(f'{t}__uniq_{attr}')} "
+                    f"ON {t} (json_extract(doc, '$.{_ident(attr)}'))"
                 )
             self.specs[name] = spec
         return not exists
@@ -128,11 +137,18 @@ class Table:
     def put_item(self, Item: Dict, **_) -> Dict:
         pk, sk = self._pk_sk(Item)
         doc = json.dumps(Item, default=_json_default, separators=(",", ":"))
+        # Upsert on the primary key ONLY. `INSERT OR REPLACE` would also
+        # "resolve" a unique-index conflict by deleting the OTHER row, i.e. a
+        # second sign-up with an existing email would erase the first account.
         with self.db.lock:
-            self.db.conn.execute(
-                f"INSERT OR REPLACE INTO {self.name} (pk, sk, doc) VALUES (?, ?, ?)",
-                (pk, sk, doc),
-            )
+            try:
+                self.db.conn.execute(
+                    f"INSERT INTO {self.name} (pk, sk, doc) VALUES (?, ?, ?) "
+                    "ON CONFLICT(pk, sk) DO UPDATE SET doc = excluded.doc",
+                    (pk, sk, doc),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise UniqueViolation(str(exc)) from None
         return {}
 
     def delete_item(self, Key: Dict, **_) -> Dict:

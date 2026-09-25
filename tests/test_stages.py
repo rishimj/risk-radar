@@ -92,7 +92,7 @@ def test_repeated_simulations_keep_firing(monkeypatch):
     fired = []
     monkeypatch.setattr("riskcore.alerting.fan_out", fired.append)
     for _ in range(10):
-        alerting.clear_cooldown(r, "TSLA")
+        alerting.clear_cooldown(r, "TSLA", simulated=True)
         feats = _feats(simulated=True)
         stages.evaluate_and_alert(r, store, feats)
         stages.write_features(r, store, feats)

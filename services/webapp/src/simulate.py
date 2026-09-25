@@ -109,7 +109,9 @@ def run(redis_client, ticker: str) -> Dict:
         raise ValueError(f"unknown ticker {ticker}")
 
     # Without this a second demo inside the cooldown would silently do nothing.
-    alerting.clear_cooldown(redis_client, ticker)
+    # Only the SIMULATED cooldown: a visitor must not be able to reset the
+    # cooldown that throttles real alerts.
+    alerting.clear_cooldown(redis_client, ticker, simulated=True)
 
     batches = build_articles(ticker)
 

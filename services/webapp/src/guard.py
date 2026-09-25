@@ -54,9 +54,11 @@ SLACK_SAVE_PER_USER = Limit("slack_save", _int("RL_SLACK_SAVE_PER_USER_HOUR", 20
 SLACK_TEST_PER_USER = Limit("slack_test", _int("RL_SLACK_TEST_PER_USER_HOUR", 5), 3600)
 API_PER_IP = Limit("api_ip", _int("RL_API_PER_IP_MIN", 300), 60)
 
-# Site-wide ceiling on new accounts (real + guest) per day. Bounds database
-# growth and bcrypt CPU no matter how many IPs a bot rotates through.
+# Site-wide ceilings on new accounts per day. They bound database growth and
+# bcrypt CPU no matter how many IPs a bot rotates through. Separate budgets, so
+# exhausting guest creation can't also shut real sign-ups (or vice versa).
 ACCOUNTS_PER_DAY = Limit("accounts_day", _int("RL_ACCOUNTS_PER_DAY", 300), 86400)
+GUESTS_PER_DAY = Limit("guests_day", _int("RL_GUESTS_PER_DAY", 500), 86400)
 
 MAX_BODY_BYTES = _int("MAX_BODY_BYTES", 16 * 1024)
 
@@ -65,6 +67,61 @@ CSP = (
     "img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; "
     "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 )
+
+
+class BodySizeLimit:
+    """Pure-ASGI cap on request bodies as they STREAM in.
+
+    GuardMiddleware refuses an oversized Content-Length up front, but a
+    chunked body has no Content-Length. This counts the bytes actually received
+    and answers 413 once the cap is crossed. (Caddy's request_body max_size
+    does the same at the edge; this is the in-app backstop.)
+    """
+
+    def __init__(self, app, max_bytes: int = None):
+        self.app = app
+        self.max_bytes = max_bytes if max_bytes is not None else MAX_BODY_BYTES
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        state = {"received": 0, "exceeded": False, "started": False}
+
+        async def limited_receive():
+            message = await receive()
+            if message["type"] == "http.request":
+                state["received"] += len(message.get("body", b""))
+                if state["received"] > self.max_bytes:
+                    state["exceeded"] = True
+                    raise _BodyTooLarge()
+            return message
+
+        async def tracking_send(message):
+            if state["exceeded"]:
+                # The app may have caught the error itself (FastAPI turns a
+                # failed body read into a 400); answer 413 whatever it says.
+                if message["type"] == "http.response.start" and not state["started"]:
+                    state["started"] = True
+                    await PlainTextResponse("Request too large.", status_code=413)(
+                        scope, receive, send)
+                return
+            if message["type"] == "http.response.start":
+                state["started"] = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, tracking_send)
+        except Exception:                              # noqa: BLE001
+            if not state["exceeded"]:
+                raise
+            if not state["started"]:
+                await PlainTextResponse("Request too large.", status_code=413)(
+                    scope, receive, send)
+
+
+class _BodyTooLarge(Exception):
+    pass
 
 
 def hit(redis_client, limit: Limit, subject: str) -> Tuple[bool, int]:

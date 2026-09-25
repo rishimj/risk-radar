@@ -87,6 +87,7 @@ app = FastAPI(
     openapi_url="/openapi.json" if ENABLE_API_DOCS else None,
 )
 app.add_middleware(guard.GuardMiddleware, redis_getter=lambda: rds)
+app.add_middleware(guard.BodySizeLimit)            # outermost: counts streamed bytes
 app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
 
 
@@ -162,7 +163,10 @@ def signup(request: Request, email: str = Form(..., max_length=254),
         "error": "That email is already registered."
         }, status_code=400)
 
-    user = store.create_user(email, auth.hash_password(password))
+    try:
+        user = store.create_user(email, auth.hash_password(password))
+    except store.DuplicateEmail:
+        return fail("That email is already registered.")
     response = RedirectResponse("/onboarding", status_code=303)
     auth.set_session_cookie(response, user["user_id"], secure=COOKIE_SECURE)
     return response
@@ -178,8 +182,11 @@ def login_page(request: Request):
 def login(request: Request, email: str = Form(..., max_length=254),
           password: str = Form(..., max_length=128)):
     email = email.strip().lower()
-    retry = (_limited(guard.LOGIN_PER_IP, guard.client_ip(request))
-             or _limited(guard.LOGIN_PER_EMAIL, email))
+    ip = guard.client_ip(request)
+    # Per IP, plus per (email, IP): keyed on the email alone, anyone could lock
+    # a known user out just by failing logins for them from elsewhere.
+    retry = (_limited(guard.LOGIN_PER_IP, ip)
+             or _limited(guard.LOGIN_PER_EMAIL, f"{email}|{ip}"))
     if retry:
         return templates.TemplateResponse(request, "login.html", {
             "error": _wait_msg(retry)}, status_code=429)
@@ -202,18 +209,33 @@ def guest_demo(request: Request):
     """One-click guest account, pre-watching a few tickers. No email, no password."""
     if not GUEST_DEMO:
         raise HTTPException(404)
-    retry = (_limited(guard.GUEST_PER_IP, guard.client_ip(request))
-             or _limited(guard.ACCOUNTS_PER_DAY, "all"))
-    if retry:
-        return templates.TemplateResponse(request, "login.html", {
-            "error": "The guest demo is busy right now. Try again later."}, status_code=429)
-    user = store.create_guest()
+    ip = guard.client_ip(request)
+    # Repeat clicks from one address reuse that address's guest instead of
+    # minting a new account each time.
+    reuse_key = f"guest:by_ip:{ip}"
+    user = None
+    try:
+        existing = rds.get(reuse_key)
+        if existing:
+            user = store.user_by_id(existing.decode() if isinstance(existing, bytes) else existing)
+    except Exception as exc:                           # noqa: BLE001
+        log.warning("guest reuse lookup failed: %s", exc)
+    if user is None:
+        retry = (_limited(guard.GUEST_PER_IP, ip) or _limited(guard.GUESTS_PER_DAY, "all"))
+        if retry:
+            return templates.TemplateResponse(request, "login.html", {
+                "error": "The guest demo is busy right now. Try again later."}, status_code=429)
+        user = store.create_guest()
+        try:
+            rds.set(reuse_key, user["user_id"], ex=GUEST_MAX_AGE_HOURS * 3600)
+        except Exception:                              # noqa: BLE001
+            pass
     response = RedirectResponse("/dashboard", status_code=303)
     auth.set_session_cookie(response, user["user_id"], secure=COOKIE_SECURE)
     return response
 
 
-@app.get("/logout")
+@app.post("/logout")
 def logout():
     response = RedirectResponse("/", status_code=303)
     auth.clear_session_cookie(response)

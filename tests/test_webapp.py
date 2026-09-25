@@ -184,10 +184,12 @@ def test_simulate_clears_the_cooldown_so_a_repeat_demo_fires(client):
     from riskcore import alerting
     register(client)
     client.post("/api/watchlist", json={"tickers": ["TSLA"]})
+    alerting.mark_sent(client.fake_redis, "TSLA", simulated=True)
     alerting.mark_sent(client.fake_redis, "TSLA")
-    assert alerting.in_cooldown(client.fake_redis, "TSLA") is True
     client.post("/api/simulate", json={"ticker": "TSLA"})
-    assert alerting.in_cooldown(client.fake_redis, "TSLA") is False
+    assert alerting.in_cooldown(client.fake_redis, "TSLA", simulated=True) is False
+    # ...but a visitor can never reset the cooldown that throttles REAL alerts
+    assert alerting.in_cooldown(client.fake_redis, "TSLA") is True
 
 
 # -- slack ------------------------------------------------------------------

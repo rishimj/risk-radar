@@ -86,6 +86,15 @@ TABLES = {
     },
 }
 
+# Attributes that must be unique per table. Enforced by the SQLite backend (a
+# unique index); DynamoDB has no equivalent, so there it remains check-then-put.
+UNIQUE_ATTRIBUTES = {"users": ["email"]}
+
+
+class UniqueViolation(Exception):
+    """Raised by put_item when a unique attribute (see UNIQUE_ATTRIBUTES) collides."""
+
+
 _resource = None
 
 
@@ -111,9 +120,26 @@ def _sqlite():
     return sqlitedb.database(config.SQLITE_PATH)
 
 
+class _UniqueTable:
+    """Translates the SQLite backend's violation into db.UniqueViolation."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def put_item(self, **kwargs):
+        from . import sqlitedb
+        try:
+            return self._inner.put_item(**kwargs)
+        except sqlitedb.UniqueViolation as exc:
+            raise UniqueViolation(str(exc)) from None
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 def table(name: str):
     if config.DB_BACKEND == "sqlite":
-        return _sqlite().table(_physical(name), TABLES[name])
+        return _UniqueTable(_sqlite().table(_physical(name), TABLES[name]))
     return resource().Table(_physical(name))
 
 
@@ -122,7 +148,7 @@ def ensure_tables() -> List[str]:
     if config.DB_BACKEND == "sqlite":
         sq = _sqlite()
         return [name for name, spec in TABLES.items()
-                if sq.create_table(_physical(name), spec)]
+                if sq.create_table(_physical(name), spec, UNIQUE_ATTRIBUTES.get(name, ()))]
 
     created = []
     client = resource().meta.client

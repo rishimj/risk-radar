@@ -286,3 +286,9 @@ footer { padding: 30px 0; color: var(--text-muted); font-size: 12px; }
 /* nav.links a (specificity 0,1,1) was overriding the button's white text */
 nav.links a.btn, nav.links a.btn:hover { color: #fff; }
 .hero p.note { font-size: 13px; color: var(--text-muted); margin: 10px 0 0; }
+/* sign-out is a POST (so no other site can log you out); styled as a nav link */
+nav.links button.linklike {
+  background: none; border: 0; padding: 0; font: inherit; font-size: 14px;
+  font-weight: 400; color: var(--text-secondary); cursor: pointer;
+}
+nav.links button.linklike:hover { color: var(--text-primary); background: none; }

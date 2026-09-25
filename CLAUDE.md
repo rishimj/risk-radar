@@ -5,7 +5,8 @@
 - **Public demo target:** `https://risk-radar.20.25.227.252.sslip.io` on the
   owner's shared Azure VM (also hosts podcast-qna on :3000; do not touch it).
   Deploy from the owner's Mac (SSH key + IP allowlist live there):
-  `VM=azureuser@20.25.227.252 SITE_HOST=risk-radar.20.25.227.252.sslip.io deploy/azure/deploy.sh`.
+  `VM=<ssh-user>@<vm-ip> SITE_HOST=risk-radar.<vm-ip>.sslip.io deploy/azure/deploy.sh`
+  (connection details are the owner's, kept out of the repo).
   The kit was verified end to end in an Ubuntu 24.04 **systemd** container
   mimicking the VM (Caddy from its apt repo, a podcast-qna stand-in): install,
   Caddy append + validate + reload, restart survival, podcast-qna untouched,
@@ -28,7 +29,7 @@
   real DynamoDB tables (dynamodb-local `-sharedDb` ignores the access key) ->
   `TABLE_PREFIX`, tests use `rrtest_`; undeclared `httpx` test dep; feed reads
   unbounded (5 MB cap); README linked a nonexistent deploy/aws/NOTES.md.
-- Tests: **321**, table tests parametrized over SQLite (always) and DynamoDB
+- Tests: **334**, table tests parametrized over SQLite (always) and DynamoDB
   Local (when reachable). `.venv/bin/python -m pytest tests/ -o addopts=""`.
 - Gotchas: Ubuntu 24.04 is Python 3.12 and `finvader==1.0.4` requires <3.12
   (marker in services/standalone/requirements.txt). `riskcore` is a regular

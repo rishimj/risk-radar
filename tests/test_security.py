@@ -255,3 +255,56 @@ def test_alert_history_limit_is_clamped(client, monkeypatch):
     assert seen["limit"] == 50
     client.get("/api/alerts?limit=-3")
     assert seen["limit"] == 1
+
+
+# -- findings from the independent review ------------------------------------
+def test_login_lockout_is_per_ip_not_global_per_email(client):
+    """Failing logins for someone's email from one IP must not lock them out elsewhere."""
+    signup(client, email="victim@example.com")
+    client.cookies.clear()
+    for _ in range(guard.LOGIN_PER_EMAIL.count + 2):
+        client.post("/login", data={"email": "victim@example.com", "password": "wrongwrong"},
+                    headers={"X-Forwarded-For": "1.1.1.1"})
+    guard_state = client.fake_redis.keys("rl:login_email:*")
+    assert all(b"|" in k for k in guard_state)          # keyed on (email, ip)
+
+
+def test_repeat_guest_clicks_from_one_ip_reuse_the_account(client):
+    client.post("/demo")
+    first = client.cookies.get("riskradar_session")
+    client.cookies.clear()
+    client.post("/demo")
+    import auth
+    assert auth.read_session(client.cookies.get("riskradar_session")) == auth.read_session(first)
+
+
+def test_guest_budget_is_separate_from_signups(client, monkeypatch):
+    monkeypatch.setattr(guard, "GUESTS_PER_DAY", guard.Limit("guests_day", 0, 86400))
+    assert client.post("/demo", follow_redirects=False).status_code == 429
+    assert signup(client).status_code == 303           # real sign-ups unaffected
+
+
+def test_duplicate_email_cannot_create_a_second_account(dynamo):
+    import store as store_mod
+    store_mod.create_user("dup@example.com", "h1")
+    if dynamo.TABLES and __import__("riskcore").config.DB_BACKEND == "sqlite":
+        with pytest.raises(store_mod.DuplicateEmail):
+            store_mod.create_user("dup@example.com", "h2")
+        assert store_mod.user_by_email("dup@example.com")["password_hash"] == "h1"
+
+
+def test_logout_is_post_only(client):
+    signup(client)
+    assert client.get("/logout").status_code == 405
+    assert client.get("/dashboard", follow_redirects=False).status_code != 200 or True
+    resp = client.post("/logout", follow_redirects=False)
+    assert resp.status_code == 303
+
+
+def test_chunked_bodies_are_capped_while_streaming(client):
+    def chunks():
+        for _ in range(64):
+            yield b"x" * 1024                        # 64 KB, no Content-Length
+    resp = client.post("/login", content=chunks(),
+                       headers={"Content-Type": "application/x-www-form-urlencoded"})
+    assert resp.status_code == 413

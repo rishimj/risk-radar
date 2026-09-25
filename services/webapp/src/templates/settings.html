@@ -49,7 +49,9 @@
     <h2>Account</h2>
     <p class="sub">{% if user.is_guest %}Guest demo account, deleted after 48 hours.
       {% else %}{{ user.email }}{% endif %}</p>
-    <a class="btn ghost" href="/logout">Sign out</a>
+    <form method="post" action="/logout" class="inline-form">
+      <button type="submit" class="ghost">Sign out</button>
+    </form>
   </div>
 
 </div>

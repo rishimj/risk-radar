@@ -116,14 +116,14 @@ def evaluate_and_alert(redis_client, store, feats: RiskFeatures) -> Optional[Ale
     if not decision.should_alert:
         return None
 
-    if alerting.in_cooldown(redis_client, feats.ticker):
+    if alerting.in_cooldown(redis_client, feats.ticker, simulated=feats.simulated):
         log.info("%s over baseline but in cooldown", feats.ticker)
         return None
 
     alert = alerting.build_alert(feats, decision.threshold or 0.0,
                                  source="simulated" if feats.simulated else "live")
     alerting.fan_out(alert)
-    alerting.mark_sent(redis_client, feats.ticker)
+    alerting.mark_sent(redis_client, feats.ticker, simulated=feats.simulated)
     log.info("ALERT %s score=%.3f baseline=%.3f n=%d",
              feats.ticker, feats.alert_score, decision.threshold or 0.0,
              decision.samples)

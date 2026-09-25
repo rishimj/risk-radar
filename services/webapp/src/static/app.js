@@ -155,6 +155,7 @@ const RiskRadar = (() => {
       return;
     }
     const slack = { sent: "delivered", failed: "failed", no_webhook: "not configured",
+                    unverified: "not verified", simulated: "not sent (simulated)",
                     not_delivered: "—", unknown: "—" };
     body.innerHTML = rows.map((a) => `
       <tr>
