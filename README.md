@@ -1,5 +1,9 @@
 # RiskRadar
 
+**Live demo: https://risk-radar.20.25.227.252.sslip.io** (click *Try the live
+demo*: no sign-up, a temporary guest account opens straight onto the dashboard;
+press *Inject synthetic event* to watch an alert fire within seconds).
+
 Multi-user financial risk monitor. Sign up, pick from the Magnificent 7, connect
 Slack, and get alerted when negative news pushes a company outside **its own**
 normal range.
@@ -57,7 +61,7 @@ optionally paste a [Slack incoming webhook](https://api.slack.com/messaging/webh
 No API keys anywhere. Every news source is free and keyless.
 
 ```bash
-make test        # no containers needed (DynamoDB tests skip without dynamodb-local)
+make test        # no containers needed (DynamoDB runs skip without dynamodb-local)
 make calibrate   # replay real news, report what alerting would do
 make seed        # populate per-ticker baselines from the last 24h
 make simulate    # force a synthetic event for TSLA
@@ -209,8 +213,10 @@ services/webapp/        auth, dashboard, API, :3000
 flink/job/news_job.py   the streaming topology (flink engine)
 services/processor/     the same topology in plain Python (lite engine), :8083
 tools/                  calibrate.py · seed_baseline.py · replay.py
-tests/                  container-free (DynamoDB-backed ones need dynamodb-local)
-deploy/aws/             EC2 user-data, Caddy, IAM policy
+tests/                  container-free; table tests run on SQLite, and on DynamoDB Local if up
+services/standalone/    the whole pipeline in one process, for small VMs (the live demo)
+deploy/azure/           install/deploy scripts, systemd units, Caddy block for the demo VM
+deploy/aws/             EC2 user-data, Caddy, IAM policy (full compose stack)
 ```
 
 `riskcore` is a real installable package rather than copied source, so the
@@ -220,13 +226,51 @@ no number.
 
 ## Deployment
 
-`deploy/aws/NOTES.md`. Single **x86_64 t3.xlarge** (~$121/mo) running the same
-compose file. PyFlink has no arm64 wheel at any version, so Graviton is off the
-table. The only local↔prod difference is `DYNAMO_ENDPOINT_URL`: set it and boto3
-talks to dynamodb-local, unset it and boto3 uses the instance role.
+Two shapes, same code:
+
+- **The live demo** runs `services/standalone` on a small shared Azure VM (2 vCPU,
+  4 GB, another app alongside): web, ingestion, the lite stream engine and FinBERT
+  in one ~0.9 GB process, with an in-process queue for Kafka and SQLite for
+  DynamoDB, behind Caddy. See [`deploy/azure/README.md`](deploy/azure/README.md).
+- **The full stack** (`docker compose`, Kafka + Flink) targets a single x86_64
+  t3.xlarge via `deploy/aws/user-data.sh`. PyFlink has no arm64 wheel at any
+  version, so Graviton is off the table. The only local↔prod difference is
+  `DYNAMO_ENDPOINT_URL`: set it and boto3 talks to dynamodb-local, unset it and
+  boto3 uses the instance role.
+
+## Running it on the public internet
+
+The demo is open to anyone, so what an anonymous visitor (or a bot) can make
+the server do is deliberately bounded. There are no paid APIs anywhere: news
+feeds are free and keyless and sentiment runs locally, so there is nothing to
+run up a bill.
+
+- **Abuse limits** (`services/webapp/src/guard.py`): per-IP limits on sign-up,
+  login, guest creation, simulation and the API; per-email login limit;
+  300 new accounts per day site-wide; one simulation site-wide per 4 minutes.
+  Client IPs come from Caddy only (`forwarded_allow_ips=127.0.0.1`), so a
+  spoofed `X-Forwarded-For` gains nothing.
+- **Guests** get a one-click account with no password, can't connect Slack (so
+  the server can't be used to post into anyone's workspace), and are deleted
+  after 48 hours.
+- **Web hardening**: CSRF refused via `Origin`/`Sec-Fetch-Site` plus JSON-only
+  APIs; a CSP that allows scripts from this origin only (no inline script
+  anywhere); feed URLs restricted to http(s) at ingestion, so a `javascript:`
+  link in an RSS item can't become an XSS; Slack webhooks must match
+  `hooks.slack.com/services/…` exactly, the only user-controlled outbound
+  request; bounded request bodies and result sizes; API docs off.
+- **Simulations can't poison baselines**: synthetic windows are tagged
+  `simulated` on their alerts and never enter a ticker's baseline, so repeated
+  demo presses don't raise the bar for real alerts.
+- **Host isolation**: bound to 127.0.0.1, Redis on a unix socket with no TCP
+  port, systemd `MemoryMax`/`CPUQuota` and sandboxing (`systemd-analyze
+  security`: 3.0 "OK").
+
+`tests/test_security.py` pins each of these.
 
 ## Status
 
 See `CLAUDE.md` for the latest verified state. In short: both engines run the
-full compose stack end to end, and a simulated TSLA crisis raises an alert on
-each (lite and Flink both within seconds of `/api/simulate`).
+full compose stack end to end, a simulated TSLA crisis raises an alert on each
+(lite and Flink both within seconds of `/api/simulate`), and the single-node
+deployment was verified end to end in an Ubuntu 24.04 systemd container.

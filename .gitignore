@@ -14,3 +14,8 @@ htmlcov/
 # Per-machine Claude Code permissions (absolute paths, personal grants).
 # .claude/settings.json IS committed; this local override is not.
 .claude/settings.local.json
+
+# local SQLite (standalone mode) holds user accounts; never commit it
+*.db
+*.db-wal
+*.db-shm

@@ -122,9 +122,11 @@ class GuardMiddleware(BaseHTTPMiddleware):
             fetch_site = request.headers.get("sec-fetch-site")
             if fetch_site and fetch_site not in ("same-origin", "none"):
                 return PlainTextResponse("Cross-site request refused.", status_code=403)
-            if origin is not None and origin != "null" and not _same_origin(origin, host):
+            # "null" is what a sandboxed cross-site iframe sends; a same-origin
+            # request never does, so it is refused like any foreign origin.
+            if origin is not None and not _same_origin(origin, host):
                 return PlainTextResponse("Cross-site request refused.", status_code=403)
-            if origin in (None, "null") and referer and not _same_origin(referer, host):
+            if origin is None and referer and not _same_origin(referer, host):
                 return PlainTextResponse("Cross-site request refused.", status_code=403)
 
             # 3. /api writes are JSON only. A bodyless POST has no content type;

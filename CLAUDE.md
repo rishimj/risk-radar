@@ -1,6 +1,46 @@
-# RiskRadar — session handoff (2026-09-25, supersedes 2026-07-27)
+# RiskRadar — session handoff (2026-09-25, public-demo release)
 
-## TL;DR (2026-09-25)
+## TL;DR (latest)
+
+- **Public demo target:** `https://risk-radar.20.25.227.252.sslip.io` on the
+  owner's shared Azure VM (also hosts podcast-qna on :3000; do not touch it).
+  Deploy from the owner's Mac (SSH key + IP allowlist live there):
+  `VM=azureuser@20.25.227.252 SITE_HOST=risk-radar.20.25.227.252.sslip.io deploy/azure/deploy.sh`.
+  The kit was verified end to end in an Ubuntu 24.04 **systemd** container
+  mimicking the VM (Caddy from its apt repo, a podcast-qna stand-in): install,
+  Caddy append + validate + reload, restart survival, podcast-qna untouched,
+  `systemd-analyze security` 3.0. The real VM deploy is the owner's step.
+- **`services/standalone/riskradar_node.py`**: the whole pipeline in one process
+  (webapp + ingestion thread + lite StreamEngine + in-process FinBERT), Kafka
+  replaced by `riskcore.kafka.set_local_sink` -> queue, DynamoDB by
+  `DB_BACKEND=sqlite` (`riskcore/sqlitedb.py`). ~0.8-0.9 GB RSS with FinBERT,
+  seeds baselines with the SAME model at startup (~40 s; alerting silent until then).
+- **Public hardening** (`services/webapp/src/guard.py`, app.py): rate limits
+  (per IP/user/email + 300 accounts/day site-wide + one simulate per 240 s
+  site-wide), CSRF via Origin/Sec-Fetch-Site (Origin "null" refused) + JSON-only
+  /api writes, strict CSP (no inline script: pages use `<script data-init>`),
+  body cap, docs off, guest demo (`POST /demo`, no password, no Slack, purged
+  after 48 h), exact Slack webhook regex, clamped list limits.
+  `tests/test_security.py` pins them.
+- **Bugs fixed this round:** simulated alerts were tagged "live" and simulated
+  windows entered (poisoned) the baseline; `javascript:` feed URLs reached
+  href attributes (XSS); `pytest` against a running stack truncated the app's
+  real DynamoDB tables (dynamodb-local `-sharedDb` ignores the access key) ->
+  `TABLE_PREFIX`, tests use `rrtest_`; undeclared `httpx` test dep; feed reads
+  unbounded (5 MB cap); README linked a nonexistent deploy/aws/NOTES.md.
+- Tests: **321**, table tests parametrized over SQLite (always) and DynamoDB
+  Local (when reachable). `.venv/bin/python -m pytest tests/ -o addopts=""`.
+- Gotchas: Ubuntu 24.04 is Python 3.12 and `finvader==1.0.4` requires <3.12
+  (marker in services/standalone/requirements.txt). `riskcore` is a regular
+  install in venvs: after changing libs/core, reinstall it (install.sh
+  force-reinstalls every deploy). Int8-quantizing FinBERT was measured and
+  rejected: no RSS saving, scores shift (-0.95 -> -0.77).
+
+---
+
+# Earlier handoff (2026-09-25, engines)
+
+## TL;DR (engines)
 
 - **Alerts now fire end to end, on both engines.** The open decision below was
   resolved with the "un-cap" option: the baseline stores `alert_score`, the

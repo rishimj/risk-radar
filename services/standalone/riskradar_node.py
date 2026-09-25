@@ -282,6 +282,10 @@ def main() -> int:
         # from 127.0.0.1 ONLY is what makes per-IP rate limits see real IPs.
         proxy_headers=True, forwarded_allow_ips="127.0.0.1",
         server_header=False, date_header=False,
+        # Every open dashboard polls four endpoints every few seconds; access
+        # logs would be thousands of journald lines per viewer per hour, and
+        # a record of visitors' IPs nobody needs.
+        access_log=os.getenv("ACCESS_LOG", "").lower() in {"1", "true", "yes"},
         limit_concurrency=int(os.getenv("LIMIT_CONCURRENCY", "64")),
         timeout_keep_alive=5,
         log_level=config.LOG_LEVEL.lower(),

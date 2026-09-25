@@ -261,7 +261,8 @@ def settings(request: Request):
 # ---------------------------------------------------------------------------
 @app.get("/api/headlines")
 def api_headlines(request: Request, limit: int = 25, ticker: Optional[str] = None):
-    return {"headlines": headlines.recent(rds, limit=min(limit, 100), ticker=ticker)}
+    limit = max(1, min(limit, 100))
+    return {"headlines": headlines.recent(rds, limit=limit, ticker=(ticker or "")[:10] or None)}
 
 
 @app.get("/api/risk")
@@ -303,7 +304,9 @@ def api_risk(request: Request):
 @app.get("/api/alerts")
 def api_alerts(request: Request, limit: int = 25):
     user = require_user(request)
-    return {"alerts": store.alerts_for_user(user["user_id"], limit=limit)}
+    # Bounded: each returned alert costs a delivery lookup, so an unbounded
+    # limit would let one request fan out into thousands of reads.
+    return {"alerts": store.alerts_for_user(user["user_id"], limit=max(1, min(limit, 50)))}
 
 
 _status_cache = {"at": 0.0, "value": None}

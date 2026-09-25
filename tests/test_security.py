@@ -234,3 +234,24 @@ def test_landing_shows_real_news_only(client):
         "companies": []}))
     html = client.get("/").text
     assert "Real headline" in html and "Synthetic crisis" not in html
+
+
+def test_null_origin_is_refused(client):
+    """A sandboxed cross-site iframe sends Origin: null and no Referer."""
+    assert signup(client, headers={"Origin": "null"}).status_code == 403
+
+
+def test_alert_history_limit_is_clamped(client, monkeypatch):
+    seen = {}
+    real = webapp.store.alerts_for_user
+
+    def spy(uid, limit=25):
+        seen["limit"] = limit
+        return real(uid, limit=limit)
+    monkeypatch.setattr(webapp.store, "alerts_for_user", spy)
+    signup(client)
+    client.post("/api/watchlist", json={"tickers": ["TSLA"]})
+    client.get("/api/alerts?limit=100000")
+    assert seen["limit"] == 50
+    client.get("/api/alerts?limit=-3")
+    assert seen["limit"] == 1
