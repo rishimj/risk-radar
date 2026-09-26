@@ -257,7 +257,7 @@
       <div class="kicker">Engineering</div>
       <h2>Built like a production system, sized for a portfolio budget.</h2>
       <p class="sub">The full stack is Kafka, Apache Flink, FinBERT, Redis and
-        DynamoDB. This demo runs the same domain code as one sandboxed process on
+        PostgreSQL. This demo runs the same domain code as one sandboxed process on
         a shared 4 GB VM, next to another app, with room to spare.</p>
     </div>
     <div class="eng-grid reveal">
@@ -277,10 +277,10 @@
           memory and CPU ceilings.</p>
         <div class="fact">systemd-analyze security → 3.0 OK</div></div>
       <div class="eng"><div class="icon">✓</div><h3>Tested where it matters</h3>
-        <p>Event-time semantics, baseline maths, abuse limits and both storage
-          backends are pinned by tests. Running the two engines side by side
+        <p>Event-time semantics, baseline maths, abuse limits and the PostgreSQL
+          data layer are pinned by tests. Running the two engines side by side
           exposed a PyFlink bug that silently discarded event time.</p>
-        <div class="fact">340+ tests · SQLite + DynamoDB</div></div>
+        <div class="fact">340+ tests · run against real PostgreSQL</div></div>
     </div>
 
     <div class="code reveal">

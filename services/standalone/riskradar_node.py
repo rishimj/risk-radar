@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """RiskRadar on one small machine: the whole pipeline in a single process.
 
-The compose stack is nine containers (Kafka, Flink, DynamoDB Local, ...) and
+The compose stack is nine containers (Kafka, Flink, PostgreSQL, ...) and
 needs several GB. This runs the same code paths inside one Python process plus
 a Redis, for a shared VM that must stay well under 1.5 GB:
 
@@ -10,7 +10,7 @@ a Redis, for a shared VM that must stay well under 1.5 GB:
                        + in-process sentiment (FinBERT if torch is installed,
                          else FinVADER/VADER; same ladder as services/enrichment)
     web              = services/webapp, served by uvicorn on 127.0.0.1
-    tables           = SQLite (riskcore.sqlitedb) instead of DynamoDB
+    tables           = PostgreSQL (a private cluster on a unix socket)
     state            = Redis (baselines, features, headlines, rate limits)
 
 What stays identical to the compose stack: the scoring, windowing, baseline,
@@ -34,9 +34,8 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 
 # ---- defaults that make this mode what it is; env can still override ----
-os.environ.setdefault("DB_BACKEND", "sqlite")
 os.environ.setdefault("BUS", "inproc")
-os.environ.setdefault("STACK_LABEL", "FinBERT · Python stream engine · Redis · SQLite")
+os.environ.setdefault("STACK_LABEL", "FinBERT · Python stream engine · PostgreSQL · Redis")
 
 # Only the webapp (whose modules import each other by bare name) and tools/ go
 # on sys.path. The enrichment, processor and ingestion services each have

@@ -1,14 +1,13 @@
 """Shared fixtures.
 
-Table-backed tests run twice: against the SQLite backend (always), and against
-a real **DynamoDB Local** if one is reachable (the same image compose runs). So
-`make test` works on a laptop with nothing running, and inside the stack also
-exercises the genuine boto3 path. Test tables carry the rrtest_ prefix, so a
-running stack's data is never touched.
+Database-backed tests run twice: against SQLite (always, a fresh file per test)
+and against a real PostgreSQL when one is reachable. The Postgres runs use a
+dedicated database (TEST_DATABASE_URL, default riskradar_test), never the app's,
+and every table is emptied between tests.
 
 Start one locally with:
-    docker compose up -d dynamodb-local
-or point DYNAMO_ENDPOINT_URL at any running instance.
+    docker compose up -d postgres
+    docker compose exec postgres createdb -U riskradar riskradar_test
 """
 import os
 import socket
@@ -20,23 +19,12 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
-DDB_ENDPOINT = os.environ.setdefault("DYNAMO_ENDPOINT_URL", "http://localhost:8000")
-
-# Overwrite rather than setdefault: a developer (or a CI runner) may already have
-# real AWS credentials exported, and DynamoDB Local partitions its data by access
-# key — so inheriting an ambient key makes tests read a different namespace than
-# they wrote.
-# Alphanumeric only: DynamoDB Local derives its storage namespace from the access
-# key and rejects one containing a hyphen with UnrecognizedClientException.
-os.environ["AWS_ACCESS_KEY_ID"] = "riskradartest"
-os.environ["AWS_SECRET_ACCESS_KEY"] = "riskradartest"
-os.environ.pop("AWS_SESSION_TOKEN", None)
-os.environ["AWS_DEFAULT_REGION"] = "us-east-1"
-os.environ["AWS_REGION"] = "us-east-1"
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-sessions")
+TEST_PG_URL = os.environ.get(
+    "TEST_DATABASE_URL", "postgresql+psycopg://riskradar:riskradar@localhost:5432/riskradar_test")
 
-# boto3 must not send loopback traffic through an outbound proxy.
-_host = urlparse(DDB_ENDPOINT).hostname or "localhost"
+# The database driver must not send loopback traffic through an outbound proxy.
+_host = urlparse(TEST_PG_URL.replace("+psycopg", "")).hostname or "localhost"
 _no_proxy = os.environ.get("NO_PROXY", "")
 if _host not in _no_proxy:
     os.environ["NO_PROXY"] = f"{_no_proxy},{_host}".strip(",")
@@ -67,55 +55,38 @@ def load_service_module(service: str, module: str):
 
 
 def _reachable(url: str, timeout: float = 1.0) -> bool:
-    parsed = urlparse(url)
+    parsed = urlparse(url.replace("+psycopg", ""))
     try:
-        with socket.create_connection(
-            (parsed.hostname or "localhost", parsed.port or 8000), timeout=timeout
-        ):
+        with socket.create_connection((parsed.hostname or "localhost", parsed.port or 5432),
+                                      timeout=timeout):
             return True
     except OSError:
         return False
 
 
-DDB_AVAILABLE = _reachable(DDB_ENDPOINT)
+PG_AVAILABLE = _reachable(TEST_PG_URL)
 
 
-# Tests touch ONLY tables carrying this prefix. dynamodb-local runs with
-# -sharedDb, which ignores the access key, so without a prefix `pytest` against
-# a running stack truncated the app's real users/watchlists/alerts.
-TEST_TABLE_PREFIX = "rrtest_"
-
-
-@pytest.fixture(params=["sqlite", "dynamodb"])
-def dynamo(request, tmp_path, monkeypatch):
-    """All four tables on each backend, emptied between tests.
-
-    SQLite always runs (a fresh file per test); DynamoDB Local runs when reachable.
-    """
+@pytest.fixture(params=["sqlite", "postgres"])
+def database(request, tmp_path, monkeypatch):
+    """The full schema on each backend, empty at the start and end of every test."""
     from riskcore import config, db
 
-    monkeypatch.setattr(config, "TABLE_PREFIX", TEST_TABLE_PREFIX)
-    monkeypatch.setattr(config, "DB_BACKEND", request.param)
     if request.param == "sqlite":
-        monkeypatch.setattr(config, "SQLITE_PATH", str(tmp_path / "test.db"))
-    elif not DDB_AVAILABLE:
-        pytest.skip(f"no DynamoDB Local at {DDB_ENDPOINT} (run: docker compose up -d dynamodb-local)")
-
-    db._resource = None
-    db.ensure_tables()
-
+        url = f"sqlite:///{tmp_path / 'test.db'}"
+    else:
+        if not PG_AVAILABLE:
+            pytest.skip(f"no PostgreSQL at {TEST_PG_URL} (see tests/conftest.py)")
+        url = TEST_PG_URL
+    monkeypatch.setattr(config, "DATABASE_URL", url)
+    db.ensure_schema()
     _truncate(db)
     yield db
     _truncate(db)
 
 
 def _truncate(db) -> None:
-    """Delete every item, keeping the tables (recreating them is far slower)."""
-    for name, spec in db.TABLES.items():
-        table = db.table(name)
-        keys = [k["AttributeName"] for k in spec["KeySchema"]]
-        scanned = table.scan(ProjectionExpression=", ".join(f"#{k}" for k in keys),
-                             ExpressionAttributeNames={f"#{k}": k for k in keys})
-        with table.batch_writer() as batch:
-            for item in scanned.get("Items", []):
-                batch.delete_item(Key={k: item[k] for k in keys})
+    """Delete every row, children first (the FKs would refuse otherwise)."""
+    with db.begin() as conn:
+        for table in reversed(db.metadata.sorted_tables):
+            conn.execute(table.delete())

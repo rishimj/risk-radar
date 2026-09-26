@@ -18,7 +18,7 @@ own trailing 24 hours.
 
 ## Highlights
 
-- **Streaming pipeline.** Kafka → Apache Flink → FinBERT → Redis → DynamoDB,
+- **Streaming pipeline.** Kafka → Apache Flink → FinBERT → Redis → PostgreSQL,
   with event-time sliding windows (15 min, sliding every 3) and
   bounded-out-of-orderness watermarks.
 - **Adaptive per-ticker alerting.** Each company is judged against the p97 of
@@ -27,6 +27,9 @@ own trailing 24 hours.
 - **Two interchangeable stream engines.** The full PyFlink topology on a
   cluster, or the identical topology in one lightweight Python process. Both
   share a single stage module, so outcomes are identical.
+- **Relational data model.** PostgreSQL with foreign keys, cascading deletes,
+  a unique email constraint, and indexes shaped to every query: a user's alert
+  history with delivery status is a single join.
 - **Built for the open internet.** Rate limiting, CSRF protection, a strict
   Content Security Policy, sandboxed systemd deployment, and one-click guest
   accounts.
@@ -49,14 +52,14 @@ own trailing 24 hours.
 
 ```bash
 cp .env.example .env        # set SECRET_KEY
-make demo                   # full stack: Kafka + Flink + FinBERT + Redis + DynamoDB
+make demo                   # full stack: Kafka + Flink + FinBERT + Redis + PostgreSQL
 make demo-lite              # same pipeline without Flink (~60 MB stream engine)
 ```
 
 Then open http://localhost:3000.
 
 ```bash
-make test                   # 346 tests
+make test                   # 366 tests
 make calibrate              # replay real news and report the alert rate
 ```
 
@@ -81,7 +84,7 @@ flowchart LR
 |---|---|
 | Streaming | Apache Kafka, Apache Flink (PyFlink), event-time windows and watermarks |
 | NLP | FinBERT (ProsusAI), batched CPU inference |
-| State | Redis (baselines, features, rate limits), DynamoDB / SQLite (users, alerts) |
+| Data | PostgreSQL 16 (users, watchlists, alert history, deliveries) via SQLAlchemy; Redis (baselines, live features, rate limits) |
 | Web | FastAPI, vanilla JS, hand-built SVG charts |
 | Deploy | Docker Compose, or a hardened single-node systemd service behind Caddy |
 
@@ -115,9 +118,9 @@ windows**, which landed inside the 1-3 alerts per ticker per day target.
 
 ### Quality and security
 
-- **346 automated tests**, covering event-time windowing semantics, baseline
-  statistics, alert policy, abuse limits, and both storage backends (SQLite and
-  DynamoDB Local).
+- **366 automated tests**, covering event-time windowing semantics, baseline
+  statistics, alert policy, abuse limits, the PostgreSQL data layer and its
+  migration tooling, all run against a real PostgreSQL.
 - **End-to-end verification** of both stream engines in Docker, with simulated
   and organic alerts firing on live news.
 - **Independent security review** of the public deployment: rate limiting,
@@ -135,7 +138,7 @@ services/ingestion/   feed polling, dedup, event-time clamping
 services/webapp/      FastAPI app, dashboard, public API
 services/standalone/  single-process deployment for small servers
 deploy/               Azure (systemd + Caddy) and AWS deployment
-tests/                346 tests
+tests/                366 tests
 ```
 
 ---

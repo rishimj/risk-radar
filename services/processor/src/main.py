@@ -3,7 +3,7 @@
 Use it instead of the three Flink containers when memory is tight (an M-series
 laptop runs the Flink images under Rosetta, since PyFlink ships no arm64 wheel).
 It consumes news.raw, and writes news.enriched, Redis features/headlines/
-baselines and DynamoDB alerts exactly as the Flink job does. Run ONE engine at a
+baselines and PostgreSQL alerts exactly as the Flink job does. Run ONE engine at a
 time: both would consume news.raw and double-count every window.
 
 What it gives up versus Flink: no checkpointed state. Kafka offsets are only
@@ -106,7 +106,7 @@ def main() -> int:
     if not _wait_for("redis", rds.ping):
         return 1
     # The Flink job's AlertFanout does this lazily; alerts need the tables.
-    _wait_for("dynamodb", db.ensure_tables, attempts=10)
+    _wait_for("postgres", db.ensure_schema, attempts=10)
 
     store = BaselineStore(rds)
     session = requests.Session()
