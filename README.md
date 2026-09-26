@@ -1,276 +1,143 @@
 # RiskRadar
 
-**Live demo: https://risk-radar.20.25.227.252.sslip.io** (click *Try the live
-demo*: no sign-up, a temporary guest account opens straight onto the dashboard;
-press *Inject synthetic event* to watch an alert fire within seconds).
+**Real-time financial news risk monitoring for the Magnificent 7.**
 
-Multi-user financial risk monitor. Sign up, pick from the Magnificent 7, connect
-Slack, and get alerted when negative news pushes a company outside **its own**
-normal range.
+### [▶ Try the live demo](https://risk-radar.20.25.227.252.sslip.io)
 
-Live news → Kafka → PyFlink sliding windows → FinBERT sentiment → per-ticker
-adaptive alerting → Slack. All Python, one `docker compose up`.
+One click, no sign-up. You land on a live dashboard streaming real market news.
 
-The stream stage runs on either of two interchangeable engines (see
-[Stream engines](#stream-engines)): **Flink** (the reference) or **lite**, the
-same topology in one ~60 MB Python process for laptops where Flink is too heavy.
+![RiskRadar landing page](docs/images/landing.png)
+
+RiskRadar reads financial headlines as they break, scores each one with
+**FinBERT**, a finance-tuned language model, and alerts you the moment a company
+moves outside **its own** normal range. It doesn't use a fixed threshold that
+fires on noise. Instead, every ticker gets an adaptive baseline learned from its
+own trailing 24 hours.
+
+![RiskRadar dashboard](docs/images/dashboard.png)
+
+## Highlights
+
+- **Streaming pipeline.** Kafka → Apache Flink → FinBERT → Redis → DynamoDB,
+  with event-time sliding windows (15 min, sliding every 3) and
+  bounded-out-of-orderness watermarks.
+- **Adaptive per-ticker alerting.** Each company is judged against the p97 of
+  its own trailing distribution, so TSLA (≈11 articles/hour) and AAPL (≈32/hour)
+  each get the right bar automatically.
+- **Two interchangeable stream engines.** The full PyFlink topology on a
+  cluster, or the identical topology in one lightweight Python process. Both
+  share a single stage module, so outcomes are identical.
+- **Built for the open internet.** Rate limiting, CSRF protection, a strict
+  Content Security Policy, sandboxed systemd deployment, and one-click guest
+  accounts.
+- **Polished product UI.** A live dashboard with interactive charts, an alert
+  timeline, and a one-button crisis simulator that tracks an event through
+  every pipeline stage.
+
+## How to use it
+
+1. Open the **[live demo](https://risk-radar.20.25.227.252.sslip.io)** and click
+   **Try the live demo**.
+2. Watch **Risk by ticker**: each card plots the alert score of every 15-minute
+   window against that ticker's own baseline. Red points crossed it.
+3. Press **Inject synthetic event**. Ten negative headlines flow through
+   FinBERT, close a window, and fire an alert in about 2 seconds. The four-step
+   tracker lights up as each stage completes.
+4. Create an account to choose your own tickers and receive alerts in Slack.
+
+### Run it locally
+
+```bash
+cp .env.example .env        # set SECRET_KEY
+make demo                   # full stack: Kafka + Flink + FinBERT + Redis + DynamoDB
+make demo-lite              # same pipeline without Flink (~60 MB stream engine)
+```
+
+Then open http://localhost:3000.
+
+```bash
+make test                   # 346 tests
+make calibrate              # replay real news and report the alert rate
+```
+
+## Architecture
 
 ```mermaid
 flowchart LR
-  RSS[["Google News when:1h ×7<br/>+ SeekingAlpha · PRNewswire<br/>· CNBC · MarketWatch"]] --> ING[ingestion]
-  SIM[["/api/simulate"]] --> RAW
-  ING -->|produce| RAW(("kafka<br/>news.raw"))
-  RAW --> MB["keyed micro-batch<br/>5 msgs OR 1s timer"]
-  MB <-->|"POST /v1/enrich/batch"| FB["FinBERT<br/>:8082"]
-  MB --> ENR(("kafka<br/>news.enriched"))
-  MB --> HL[["redis<br/>recent:headlines"]]
-  MB --> FM["flat_map → mentions"]
-  FM --> WM["watermarks<br/>30s OOO + idleness"]
-  WM --> WIN["key_by(ticker)<br/>sliding 15m / 3m"]
-  WIN --> RF[["redis<br/>feat:{ticker}:latest"]]
-  WIN --> BL[["redis base:{ticker}<br/>trailing 24h"]]
-  BL --> AL
-  WIN --> AL["alert if above<br/>this ticker's p99"]
-  AL --> DDB[("dynamodb<br/>alerts · deliveries")]
-  AL --> SL[["per-user Slack"]]
-  WEB["webapp :3000"] -.-> HL
-  WEB -.-> RF
-  WEB -.-> DDB
+  RSS[["News feeds<br/>Google News · Seeking Alpha<br/>PR Newswire · CNBC · MarketWatch"]] --> ING[Ingestion<br/>dedup + event-time clamp]
+  ING --> RAW(("Kafka<br/>news.raw"))
+  RAW --> MB["Micro-batch<br/>5 articles or 1 s"]
+  MB <--> FB["FinBERT<br/>sentiment"]
+  MB --> WIN["Sliding windows<br/>15 min / 3 min, per ticker"]
+  WIN --> BL[["Adaptive baseline<br/>trailing 24 h, p97"]]
+  BL --> AL["Alert"]
+  AL --> SL[["Slack"]]
+  AL --> DB[("Alert history")]
+  WEB["Web app"] -.-> WIN
+  WEB -.-> DB
 ```
 
-## Quick start
-
-```bash
-cp .env.example .env          # set SECRET_KEY; nothing else is required
-make demo                     # build, start, wait for the Flink job
-make demo-lite                # ...or the same pipeline without Flink
-```
-
-Then open **http://localhost:3000**, create an account, pick tickers, and
-optionally paste a [Slack incoming webhook](https://api.slack.com/messaging/webhooks).
-
-| Port | What |
+| Layer | Technology |
 |---|---|
-| 3000 | web app |
-| 8081 | Flink UI — the job should read **RUNNING** (flink engine) |
-| 8083 | lite processor `/stats` — `"state": "RUNNING"` (lite engine) |
-| 8090 | Kafka UI — `news.raw`, `news.enriched` (`docker compose --profile tools up -d kafka-ui`) |
-| 8082 | enrichment service (`/stats` shows the live sentiment tier) |
-| 8000 | dynamodb-local |
+| Streaming | Apache Kafka, Apache Flink (PyFlink), event-time windows and watermarks |
+| NLP | FinBERT (ProsusAI), batched CPU inference |
+| State | Redis (baselines, features, rate limits), DynamoDB / SQLite (users, alerts) |
+| Web | FastAPI, vanilla JS, hand-built SVG charts |
+| Deploy | Docker Compose, or a hardened single-node systemd service behind Caddy |
 
-No API keys anywhere. Every news source is free and keyless.
+## Validation and benchmarks
 
-```bash
-make test        # no containers needed (DynamoDB runs skip without dynamodb-local)
-make calibrate   # replay real news, report what alerting would do
-make seed        # populate per-ticker baselines from the last 24h
-make simulate    # force a synthetic event for TSLA
-```
+### Why an adaptive baseline
 
-## Stream engines
+Replaying **672 real Mag 7 headlines** through the risk model showed that no fixed
+threshold works:
 
-| | `make demo` (flink) | `make demo-lite` (lite) |
-|---|---|---|
-| what runs | jobmanager + taskmanager + one-shot submitter | `services/processor`, one Python process |
-| measured RSS | ~960 MB (JM 309 + TM 654, x86_64 native) | **~62 MB** |
-| on Apple Silicon | amd64 under Rosetta (no arm64 PyFlink wheel) | native arm64 |
-| state | checkpointed every 30 s | in memory; Kafka offsets committed once the enrichment buffer drains |
-| UI | :8081 | :8083/stats |
+| Alerting approach | Windows that fire |
+|---|---|
+| Fixed 0.7 threshold | **13.5%** (a single mildly negative headline scores 0.81) |
+| Average sentiment | **0%** (good and bad news cancel out) |
+| **Per-ticker p97 baseline** | **~1.07 alerts per ticker per day** |
 
-Both engines call the same `riskcore.stages` functions for every outcome
-(enrichment call, headline row, alert decision, feature/baseline write), and
-the lite engine reimplements only Flink's scheduling: micro-batch flushing,
-`max_ts - delay - 1` watermarks, zero allowed lateness and sliding-window
-firing. `tests/test_processor.py` pins those rules. Run **one** engine at a
-time: both consume `news.raw` with their own consumer group, so running both
-double-writes every window. `make demo` / `make demo-lite` stop the other one.
+The p97 setting comes from a FinBERT calibration over **653 articles and 789
+windows**, which landed inside the 1-3 alerts per ticker per day target.
 
-What lite gives up: open windows are lost on restart (the next articles open
-new ones), and there is no parallelism, which a single-partition topic doesn't
-use anyway.
+### Performance
 
-## Why there is no threshold constant
+| Metric | Result |
+|---|---|
+| Headline to alert, lightweight engine | **~0.4 s** |
+| Headline to alert, Apache Flink | **~3.5 s** |
+| Simulated crisis to alert, live dashboard | **~2.4 s** |
+| FinBERT batch inference (5 headlines) | **~88 ms** |
+| Stream engine memory, Flink vs lightweight | **~960 MB vs ~62 MB** |
+| Full single-node deployment (web + pipeline + FinBERT) | **~0.8 GB** |
+| Ingestion throughput | **160-190 articles per 2-minute sweep** |
 
-The obvious design is `if risk > 0.7: alert`. It does not work, and the failure
-is measurable rather than theoretical.
+### Quality and security
 
-Replaying **672 real Mag 7 headlines** over 6 hours through the risk formula:
+- **346 automated tests**, covering event-time windowing semantics, baseline
+  statistics, alert policy, abuse limits, and both storage backends (SQLite and
+  DynamoDB Local).
+- **End-to-end verification** of both stream engines in Docker, with simulated
+  and organic alerts firing on live news.
+- **Independent security review** of the public deployment: rate limiting,
+  CSRF, CSP, SSRF-safe Slack webhooks, XSS-safe feed handling, and a systemd
+  sandbox that scores **3.0 ("OK")** on `systemd-analyze security`.
 
-| approach | windows firing | alerts |
-|---|---|---|
-| fixed threshold 0.7 | **202 / 1499 (13.5%)** | 1.4 per ticker per **hour** |
-| mean-sentiment variants, any window 5–60m | 0 / 488 (0.0%) | none, ever |
-
-The fixed cut fires constantly because `sentiment_risk = (1 − s) / 2` maps
-*perfectly neutral* news to 0.5 — already most of the way to 0.7 — so a single
-mildly negative headline (n=1, sentiment −0.30) scores **0.8125** and alerts.
-Swing the other way and average the sentiment instead, and nothing ever fires,
-because real news mixes good and bad and the mean sits near zero at every window
-size.
-
-There is no constant that sits robustly between 13.5% and 0.0%, because the
-right cut depends on the sentiment model, the feed mix, and the ticker.
-
-**So each ticker is judged against its own trailing 24 hours.** A window alerts
-when it lands in that ticker's top 1%. TSLA sees ~11 articles an hour and AAPL
-~32; they get different bars automatically, and the rate stays stable when the
-model or the feeds change. `tools/calibrate.py` replays a live corpus and reports
-the resulting rate so the percentile is tuned against data, not taste:
+## Project layout
 
 ```
-     p  crossings  alerts  per ticker/day
-    90         47      21           11.16
-    95         37      16            8.50
-    99         11       7            3.72
-  99.5         10       6            3.19
+libs/core/riskcore/   shared domain logic: scoring, windows, baselines, alerting
+flink/job/            Apache Flink streaming topology
+services/processor/   lightweight stream engine (same topology, plain Python)
+services/enrichment/  FinBERT sentiment service
+services/ingestion/   feed polling, dedup, event-time clamping
+services/webapp/      FastAPI app, dashboard, public API
+services/standalone/  single-process deployment for small servers
+deploy/               Azure (systemd + Caddy) and AWS deployment
+tests/                346 tests
 ```
 
-Two consequences worth knowing:
+---
 
-- **Cold start is seeded, not waited out.** 50 samples at a 3-minute slide is
-  2.5h of warmup, and the natural fallback during warmup is the same 0.7 that
-  fires 13.5% of the time — so a fresh `make demo` would spam alerts for exactly
-  the hours you're watching. `tools/seed_baseline.py` replays the last 24h at
-  startup; until a ticker has enough samples, alerting stays **silent**.
-- **The baseline stores the uncapped score.** The dashboard gauge is
-  `min(1.0, sentiment_risk × volume × bias)`, but real negative news hits that
-  cap often (15 of 258 freshly seeded TSLA windows), which put p99 at exactly
-  1.0, and `1.0 > 1.0` never fires. Baselines and the alert test therefore use
-  `alert_score`, the same formula without the cap (0 to 1.875), so a
-  ten-headline crisis (1.81) still outranks a three-headline dip (~1.1).
-- **A sustained spike self-damps.** Firing windows feed the distribution, so a
-  prolonged crisis raises the ticker's own bar and quiets down. That is intended
-  for anomaly detection, but it means this reports the *onset* of bad news, not
-  its persistence.
-
-## Why these news sources
-
-Picked by measurement, not reputation. Probed live on 2026-07-27:
-
-| source | fresh items | verdict |
-|---|---|---|
-| **Google News `when:1h`** ×7 tickers | **157 in the last hour**, all ≤60 min | primary |
-| Seeking Alpha market currents | 7, all ≤1h | secondary |
-| PR Newswire financial | 20, of which 17 ≤1h | secondary |
-| CNBC / MarketWatch | 30 / 10, newest 5.7h / 1.0h | breadth |
-| Yahoo Finance per-ticker | **HTTP 429** under a 7-ticker loop | backup only |
-
-Yahoo is the obvious pick and it throttles. Google News' `when:` operator is what
-makes freshness free — constraining the query to the last hour means nearly
-everything arriving is genuinely new. Age filtering still runs first, because
-CNBC's evergreen tail reaches **914 hours** old and the timestamp-clamping step
-would otherwise re-inject month-old articles as breaking news forever.
-
-## Why FinBERT and not a general sentiment model
-
-Scoring the same corpus with plain VADER, the most "negative" headlines were:
-
-```
--0.91  Silicon Valley developer accused of murder after ... Tesla ...
--0.90  Fake song appears on jailed rapper's Apple Music profile ...
-```
-
-Maximal lexical negativity, near-zero *financial* risk. A finance-tuned model
-scores these near neutral. The service degrades FinBERT → FinVADER → VADER if
-torch is unavailable, and `/stats` reports which tier is live.
-
-## Notes from the build
-
-Real data kept correcting the design:
-
-- **"Get Ready for the Gravenstein Apple Fair in Sebastopol" matched AAPL.** A
-  fruit festival. The first fix — requiring a finance keyword nearby — dropped 35
-  articles to fix 1, killing obvious hits like "Apple Reclaims Title as World's
-  Most Valuable Company". Inverting it to reject only the stereotyped
-  non-corporate senses (fruit, rainforest, meta-analysis) removes exactly 1 of 177.
-- **The window widened from 5m to 15m.** At the measured ~16 articles per ticker
-  per hour, a 5-minute window holds a median of *two* articles — too thin for any
-  volume signal to mean anything.
-- **Identical baseline observations silently collapsed.** Redis sorted-set members
-  are a set, so two windows with the same `(timestamp, score)` became one entry,
-  under-counting the distribution and suppressing alerting indefinitely.
-
-- **PyFlink silently dropped the event-time assigner.** `with_idleness()`
-  returns a new `WatermarkStrategy` that wraps only the Java object, so calling
-  it after `with_timestamp_assigner()` discards the Python assigner and the job
-  falls back to Kafka produce time. Windows were keyed on when an article was
-  *sent*, not *published*, and simulate's watermark filler could not close them.
-  The lite engine surfaced it by disagreeing with Flink on the same input.
-
-## Layout
-
-```
-libs/core/riskcore/     shared domain logic — imported by every service AND both engines
-  stages.py             per-record stage logic both stream engines execute
-  risk.py               window scoring (0-1 gauge + uncapped alert score)
-  baseline.py           per-ticker adaptive alert cut
-  entities.py           Mag 7 matching, ambiguity guard
-  feeds.py              source definitions + parsing
-  windows.py            Flink's sliding-window assignment, reimplemented for replay
-services/enrichment/    FastAPI + FinBERT, :8082
-services/ingestion/     poll → filter → dedup → clamp → produce
-services/webapp/        auth, dashboard, API, :3000
-flink/job/news_job.py   the streaming topology (flink engine)
-services/processor/     the same topology in plain Python (lite engine), :8083
-tools/                  calibrate.py · seed_baseline.py · replay.py
-tests/                  container-free; table tests run on SQLite, and on DynamoDB Local if up
-services/standalone/    the whole pipeline in one process, for small VMs (the live demo)
-deploy/azure/           install/deploy scripts, systemd units, Caddy block for the demo VM
-deploy/aws/             EC2 user-data, Caddy, IAM policy (full compose stack)
-```
-
-`riskcore` is a real installable package rather than copied source, so the
-calibration harness buckets windows with the *same* code the running job uses —
-a calibration number computed by different code than the job would be worse than
-no number.
-
-## Deployment
-
-Two shapes, same code:
-
-- **The live demo** runs `services/standalone` on a small shared Azure VM (2 vCPU,
-  4 GB, another app alongside): web, ingestion, the lite stream engine and FinBERT
-  in one ~0.9 GB process, with an in-process queue for Kafka and SQLite for
-  DynamoDB, behind Caddy. See [`deploy/azure/README.md`](deploy/azure/README.md).
-- **The full stack** (`docker compose`, Kafka + Flink) targets a single x86_64
-  t3.xlarge via `deploy/aws/user-data.sh`. PyFlink has no arm64 wheel at any
-  version, so Graviton is off the table. The only local↔prod difference is
-  `DYNAMO_ENDPOINT_URL`: set it and boto3 talks to dynamodb-local, unset it and
-  boto3 uses the instance role.
-
-## Running it on the public internet
-
-The demo is open to anyone, so what an anonymous visitor (or a bot) can make
-the server do is deliberately bounded. There are no paid APIs anywhere: news
-feeds are free and keyless and sentiment runs locally, so there is nothing to
-run up a bill.
-
-- **Abuse limits** (`services/webapp/src/guard.py`): per-IP limits on sign-up,
-  login, guest creation, simulation and the API; per-email login limit;
-  300 new accounts per day site-wide; one simulation site-wide per 4 minutes.
-  Client IPs come from Caddy only (`forwarded_allow_ips=127.0.0.1`), so a
-  spoofed `X-Forwarded-For` gains nothing.
-- **Guests** get a one-click account with no password, can't connect Slack (so
-  the server can't be used to post into anyone's workspace), and are deleted
-  after 48 hours.
-- **Web hardening**: CSRF refused via `Origin`/`Sec-Fetch-Site` plus JSON-only
-  APIs; a CSP that allows scripts from this origin only (no inline script
-  anywhere); feed URLs restricted to http(s) at ingestion, so a `javascript:`
-  link in an RSS item can't become an XSS; Slack webhooks must match
-  `hooks.slack.com/services/…` exactly, the only user-controlled outbound
-  request; bounded request bodies and result sizes; API docs off.
-- **Simulations can't poison baselines**: synthetic windows are tagged
-  `simulated` on their alerts and never enter a ticker's baseline, so repeated
-  demo presses don't raise the bar for real alerts.
-- **Host isolation**: bound to 127.0.0.1, Redis on a unix socket with no TCP
-  port, systemd `MemoryMax`/`CPUQuota` and sandboxing (`systemd-analyze
-  security`: 3.0 "OK").
-
-`tests/test_security.py` pins each of these.
-
-## Status
-
-See `CLAUDE.md` for the latest verified state. In short: both engines run the
-full compose stack end to end, a simulated TSLA crisis raises an alert on each
-(lite and Flink both within seconds of `/api/simulate`), and the single-node
-deployment was verified end to end in an Ubuntu 24.04 systemd container.
+Built by [Rishi Manimaran](https://github.com/rishimj).
