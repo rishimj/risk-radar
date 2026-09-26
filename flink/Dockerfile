@@ -34,7 +34,8 @@ RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
 RUN pip3 install --no-cache-dir \
       apache-flink==1.20.1 \
       redis>=5.0 \
-      boto3>=1.34 \
+      "sqlalchemy>=2.0,<3" \
+      "psycopg[binary]>=3.1" \
       requests>=2.31
 
 # riskcore must be present on the TASKMANAGER too, not just the submitter — the

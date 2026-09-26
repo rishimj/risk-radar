@@ -29,17 +29,19 @@ usermod -aG docker ec2-user
 git clone "$REPO_URL" "$APP_DIR" || (cd "$APP_DIR" && git pull)
 cd "$APP_DIR/riskradar"
 
-# Secrets come from SSM Parameter Store, never from the AMI or the repo.
-# Note what is deliberately ABSENT: DYNAMO_ENDPOINT_URL. Leaving it unset is what
-# switches boto3 from dynamodb-local to real DynamoDB via the instance role, and
-# it is the only difference between this deployment and a laptop.
-{
-  echo "SECRET_KEY=$(aws ssm get-parameter --name "$SSM_PREFIX/secret_key" \
-        --with-decryption --region "$REGION" --query Parameter.Value --output text)"
-  echo "AWS_REGION=$REGION"
-  echo "COOKIE_SECURE=true"
-  echo "LOG_LEVEL=INFO"
-} > .env
+# Secrets come from SSM Parameter Store, never from the AMI or the repo. The
+# PostgreSQL password is generated here once and kept in .env (mode 600); the
+# database runs as the compose "postgres" service on a volume.
+if [ ! -f .env ]; then
+  {
+    echo "SECRET_KEY=$(aws ssm get-parameter --name "$SSM_PREFIX/secret_key" \
+          --with-decryption --region "$REGION" --query Parameter.Value --output text)"
+    echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)"
+    echo "COOKIE_SECURE=true"
+    echo "LOG_LEVEL=INFO"
+  } > .env
+  chmod 600 .env
+fi
 
 # The stream engine is a compose profile; with no profile, nothing consumes
 # news.raw. x86_64 runs Flink natively, so production uses the reference

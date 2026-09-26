@@ -1,7 +1,7 @@
 """Public-internet protections: CSRF, headers, rate limits, guests, input limits.
 
 Each test names the abuse it prevents. These run against the real app with
-fakeredis and a real table backend (SQLite always, DynamoDB Local if up).
+fakeredis and a real database (SQLite always, PostgreSQL when reachable).
 """
 import fakeredis
 import pytest
@@ -16,7 +16,7 @@ guard = webapp.guard                               # the instance the app import
 
 
 @pytest.fixture
-def client(dynamo, monkeypatch):
+def client(database, monkeypatch):
     fake = fakeredis.FakeRedis()
     monkeypatch.setattr(webapp, "rds", fake)
     from riskcore.baseline import BaselineStore
@@ -190,7 +190,7 @@ def test_guests_cannot_use_slack(client):
     assert client.post("/api/slack/test").status_code == 403
 
 
-def test_guest_accounts_cannot_be_logged_into_with_a_password(client, dynamo):
+def test_guest_accounts_cannot_be_logged_into_with_a_password(client, database):
     import store as store_mod
     guest = store_mod.create_guest()
     for pw in ("", "!guest-no-password", "password"):
@@ -198,13 +198,16 @@ def test_guest_accounts_cannot_be_logged_into_with_a_password(client, dynamo):
         assert resp.status_code == 401
 
 
-def test_old_guests_are_purged(dynamo):
+def test_old_guests_are_purged(database):
+    """Guests expire, and their watchlists go with them (ON DELETE CASCADE)."""
+    from datetime import datetime, timezone
+    from sqlalchemy import update
     import store as store_mod
     old = store_mod.create_guest()
     real = store_mod.create_user("keep@example.com", "hash")
-    dynamo.table("users").update_item(
-        Key={"user_id": old["user_id"]}, UpdateExpression="SET created_at = :c",
-        ExpressionAttributeValues={":c": "2020-01-01T00:00:00Z"})
+    with database.begin() as conn:
+        conn.execute(update(database.users).where(database.users.c.user_id == old["user_id"])
+                     .values(created_at=datetime(2020, 1, 1, tzinfo=timezone.utc)))
     fresh = store_mod.create_guest()
     assert store_mod.purge_guests(48) == 1
     assert store_mod.user_by_id(old["user_id"]) is None
@@ -285,13 +288,13 @@ def test_guest_budget_is_separate_from_signups(client, monkeypatch):
     assert signup(client).status_code == 303           # real sign-ups unaffected
 
 
-def test_duplicate_email_cannot_create_a_second_account(dynamo):
+def test_duplicate_email_cannot_create_a_second_account(database):
+    """The unique constraint, not a check-then-insert, is what guarantees this."""
     import store as store_mod
     store_mod.create_user("dup@example.com", "h1")
-    if dynamo.TABLES and __import__("riskcore").config.DB_BACKEND == "sqlite":
-        with pytest.raises(store_mod.DuplicateEmail):
-            store_mod.create_user("dup@example.com", "h2")
-        assert store_mod.user_by_email("dup@example.com")["password_hash"] == "h1"
+    with pytest.raises(store_mod.DuplicateEmail):
+        store_mod.create_user("dup@example.com", "h2")
+    assert store_mod.user_by_email("dup@example.com")["password_hash"] == "h1"
 
 
 def test_logout_is_post_only(client):

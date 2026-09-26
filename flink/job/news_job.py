@@ -239,7 +239,7 @@ class AlertFanout:
                 self._redis = redis.from_url(config.REDIS_URL)
                 self._store = BaselineStore(self._redis)
                 try:
-                    db.ensure_tables()
+                    db.ensure_schema()
                 except Exception as exc:               # noqa: BLE001
                     log.warning("ensure_tables: %s", exc)
 
