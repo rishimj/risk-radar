@@ -1,0 +1,45 @@
+# Private PostgreSQL cluster for RiskRadar: owned by the riskradar user, data in
+# /srv/risk-radar/pgdata, unix socket only (listen_addresses=''), no TCP port.
+# Independent of any system PostgreSQL. Installed by deploy/azure/install.sh.
+[Unit]
+Description=PostgreSQL for RiskRadar (unix socket only)
+After=network.target
+
+[Service]
+Type=notify
+User=riskradar
+Group=riskradar
+ExecStart=/usr/lib/postgresql/16/bin/postgres -D /srv/risk-radar/pgdata \
+  -c listen_addresses='' -c unix_socket_directories=/srv/risk-radar/run \
+  -c unix_socket_permissions=0700 -c max_connections=20 \
+  -c shared_buffers=32MB -c work_mem=4MB -c maintenance_work_mem=32MB \
+  -c effective_cache_size=128MB -c log_destination=stderr -c logging_collector=off
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=mixed
+KillSignal=SIGINT
+TimeoutSec=120
+Restart=always
+RestartSec=3
+
+MemoryMax=256M
+TasksMax=64
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/srv/risk-radar/pgdata /srv/risk-radar/run
+PrivateTmp=true
+ProtectHome=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

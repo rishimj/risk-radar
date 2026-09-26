@@ -51,7 +51,7 @@ need_kb=$([ "$LITE" = 1 ] && echo 700000 || echo 3500000)
 free -h || true
 
 # ---------------------------------------------------------------------------
-log "system packages (python venv, redis-server binary)"
+log "system packages (python venv, redis-server, postgresql-16 binaries)"
 redis_was_installed=0
 dpkg -s redis-server >/dev/null 2>&1 && redis_was_installed=1
 redis_was_active=0
@@ -60,10 +60,19 @@ export DEBIAN_FRONTEND=noninteractive
 # needrestart (on by default in Ubuntu 24.04) may otherwise restart OTHER
 # services whose libraries an install touched. List only; restart nothing.
 export NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1
+# Ubuntu's postgresql package creates and starts a system-wide "main" cluster on
+# :5432. RiskRadar runs its own private cluster instead, so when postgresql is
+# not installed yet, tell postgresql-common not to create that default cluster.
+# An existing PostgreSQL installation and its clusters are left untouched.
+if ! dpkg -s postgresql-common >/dev/null 2>&1; then
+  install -d /etc/postgresql-common
+  grep -qs '^create_main_cluster' /etc/postgresql-common/createcluster.conf \
+    || echo "create_main_cluster = false" >> /etc/postgresql-common/createcluster.conf
+fi
 apt-get update -qq
 # --no-upgrade: packages already present (python3, curl, ...) stay at their
 # current version, so nothing another app relies on moves underneath it.
-apt-get install -y -qq --no-upgrade python3 python3-venv python3-pip redis-server curl ca-certificates >/dev/null
+apt-get install -y -qq --no-upgrade python3 python3-venv python3-pip redis-server postgresql-16 curl ca-certificates >/dev/null
 # Installing redis-server auto-starts a system-wide instance on :6379. RiskRadar
 # does not use it (it runs its own on a unix socket), so if THIS script is what
 # installed the package, turn that default instance back off. If a system Redis
@@ -78,7 +87,7 @@ if ! id "$SVC_USER" >/dev/null 2>&1; then
   useradd --system --create-home --home-dir "$ROOT" --shell /usr/sbin/nologin "$SVC_USER"
 fi
 install -d -o "$SVC_USER" -g "$SVC_USER" -m 750 "$ROOT"
-for d in data data/cache models redis run; do
+for d in data data/cache models redis run pgdata; do
   install -d -o "$SVC_USER" -g "$SVC_USER" -m 750 "$ROOT/$d"
 done
 
@@ -131,6 +140,14 @@ fi
 chown "$SVC_USER:$SVC_USER" "$envfile"
 chmod 600 "$envfile"
 install -o "$SVC_USER" -g "$SVC_USER" -m 600 "$ROOT/app/deploy/azure/redis.conf" "$ROOT/redis.conf"
+# Upgrading from the SQLite release: point the app at PostgreSQL. The rest of
+# the existing env file (SECRET_KEY, tuning) is kept as it is.
+if ! grep -q '^DATABASE_URL=' "$envfile"; then
+  sed -i '/^DB_BACKEND=/d; /^SQLITE_PATH=/d' "$envfile"
+  printf '\n# Private PostgreSQL over its unix socket (peer auth as the riskradar user).\n' >> "$envfile"
+  echo "DATABASE_URL=postgresql+psycopg://riskradar@/riskradar?host=$ROOT/run" >> "$envfile"
+  echo "   switched the app to PostgreSQL"
+fi
 
 if [ "$LITE" != 1 ]; then
   log "pre-downloading FinBERT (~440 MB, once)"
@@ -145,9 +162,48 @@ fi
 if [ "$SKIP_SYSTEMD" != 1 ]; then
   log "systemd units"
   install -m 644 "$ROOT/app/deploy/azure/risk-radar-redis.service" /etc/systemd/system/risk-radar-redis.service
+  install -m 644 "$ROOT/app/deploy/azure/risk-radar-postgres.service" /etc/systemd/system/risk-radar-postgres.service
   install -m 644 "$ROOT/app/deploy/azure/risk-radar.service" /etc/systemd/system/risk-radar.service
   systemctl daemon-reload
   systemctl enable --now risk-radar-redis
+
+  log "PostgreSQL (private cluster, unix socket only)"
+  PGBIN=/usr/lib/postgresql/16/bin
+  if [ ! -f "$ROOT/pgdata/PG_VERSION" ]; then
+    # Peer auth on the socket, nothing over TCP: only the riskradar OS user can
+    # connect, as the riskradar role, with no password to leak.
+    runuser -u "$SVC_USER" -- "$PGBIN/initdb" -D "$ROOT/pgdata" -U "$SVC_USER" \
+      --auth-local=peer --auth-host=reject --encoding=UTF8 --locale=C.UTF-8 >/dev/null
+    echo "   initialised $ROOT/pgdata"
+  fi
+  systemctl enable --now risk-radar-postgres
+  for i in $(seq 1 30); do
+    runuser -u "$SVC_USER" -- "$PGBIN/pg_isready" -q -h "$ROOT/run" && break
+    sleep 1
+  done
+  runuser -u "$SVC_USER" -- "$PGBIN/pg_isready" -q -h "$ROOT/run" || die "PostgreSQL did not start"
+  if ! runuser -u "$SVC_USER" -- "$PGBIN/psql" -h "$ROOT/run" -d postgres -tAc \
+      "SELECT 1 FROM pg_database WHERE datname='riskradar'" | grep -q 1; then
+    runuser -u "$SVC_USER" -- "$PGBIN/createdb" -h "$ROOT/run" riskradar
+    echo "   created database riskradar"
+  fi
+
+  # One-time data migration from the SQLite release. The app is stopped first
+  # so nothing writes to SQLite mid-copy; the SQLite file is kept as a backup.
+  legacy="$ROOT/data/riskradar.db"
+  if [ -f "$legacy" ]; then
+    log "migrating users, watchlists and alert history from SQLite"
+    systemctl stop risk-radar 2>/dev/null || true
+    runuser -u "$SVC_USER" -- env $(grep '^DATABASE_URL=' "$envfile") \
+      "$ROOT/venv/bin/python" "$ROOT/app/tools/migrate_to_postgres.py" --from-sqlite "$legacy" \
+      || die "migration failed; SQLite data is untouched at $legacy"
+    stamp=$(date +%Y%m%d%H%M%S)
+    for f in "$legacy" "$legacy-wal" "$legacy-shm"; do
+      [ -f "$f" ] && mv "$f" "$f.migrated-$stamp"
+    done
+    echo "   SQLite file kept as $legacy.migrated-$stamp"
+  fi
+
   systemctl enable risk-radar
   systemctl restart risk-radar
 

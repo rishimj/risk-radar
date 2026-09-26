@@ -32,16 +32,10 @@ def _bool(name: str, default: bool) -> bool:
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "localhost:29092")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 ENRICHMENT_URL = os.getenv("ENRICHMENT_URL", "http://localhost:8082")
-DYNAMO_ENDPOINT_URL = os.getenv("DYNAMO_ENDPOINT_URL") or None  # unset on AWS
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
-# "dynamodb" (default; DynamoDB Local or AWS) or "sqlite" (single-node deploy).
-DB_BACKEND = os.getenv("DB_BACKEND", "dynamodb").strip().lower()
-SQLITE_PATH = os.getenv("SQLITE_PATH", "riskradar.db")
-# Prepended to every table name. The test suite sets its own so it can never
-# truncate a running stack's tables, which share dynamodb-local's -sharedDb file.
-TABLE_PREFIX = os.getenv("TABLE_PREFIX", "")
+# PostgreSQL in every deployment; sqlite:/// URLs work too (used by the tests).
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+psycopg://riskradar:riskradar@localhost:5432/riskradar")
 
 # "kafka" (default) or "inproc": the standalone runner swaps Kafka for an
 # in-process queue (see riskcore.kafka.set_local_sink).

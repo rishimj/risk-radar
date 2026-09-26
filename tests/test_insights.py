@@ -53,7 +53,7 @@ def test_histogram_bins_cover_every_value():
 
 
 @pytest.fixture
-def client(dynamo, monkeypatch):
+def client(database, monkeypatch):
     fake = fakeredis.FakeRedis()
     monkeypatch.setattr(webapp, "rds", fake)
     monkeypatch.setattr(webapp, "baselines", BaselineStore(fake, min_samples=5))

@@ -13,7 +13,7 @@ from conftest import load_service_module          # noqa: E402
 
 
 @pytest.fixture
-def client(dynamo, monkeypatch):
+def client(database, monkeypatch):
     webapp = load_service_module("webapp", "app")
 
     fake = fakeredis.FakeRedis()
@@ -70,7 +70,7 @@ def test_login_round_trip(client):
     assert resp.headers["location"] == "/dashboard"
 
 
-def test_password_is_not_stored_in_plaintext(client, dynamo):
+def test_password_is_not_stored_in_plaintext(client, database):
     register(client)
     store = load_service_module("webapp", "store")
     user = store.user_by_email("a@example.com")
