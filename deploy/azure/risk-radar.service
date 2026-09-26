@@ -3,9 +3,9 @@
 # and Caddy is the sole public entry point.
 [Unit]
 Description=RiskRadar (single-node: web + ingestion + stream engine)
-After=network-online.target risk-radar-redis.service
+After=network-online.target risk-radar-redis.service risk-radar-postgres.service
 Wants=network-online.target
-Requires=risk-radar-redis.service
+Requires=risk-radar-redis.service risk-radar-postgres.service
 
 [Service]
 Type=simple

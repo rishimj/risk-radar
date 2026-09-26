@@ -18,7 +18,7 @@ import logging
 import time
 
 import requests
-from boto3.dynamodb.conditions import Key
+from sqlalchemy import insert, select, update
 
 from . import config, db
 from .models import Alert, RiskFeatures, iso, utcnow
@@ -143,7 +143,7 @@ _SUB_TTL = 30.0
 
 
 def subscribers_for(ticker: str, use_cache: bool = True) -> List[Dict]:
-    """Users watching `ticker`, via the watchlists ticker-index GSI."""
+    """Users watching `ticker`: one indexed join, cached ~30 s."""
     now = time.time()
     if use_cache:
         hit = _sub_cache.get(ticker)
@@ -151,26 +151,16 @@ def subscribers_for(ticker: str, use_cache: bool = True) -> List[Dict]:
             return hit[1]
 
     try:
-        resp = db.table("watchlists").query(
-            IndexName="ticker-index",
-            KeyConditionExpression=Key("ticker").eq(ticker),
-        )
-        rows = resp.get("Items", [])
+        with db.begin() as conn:
+            rows = conn.execute(
+                select(db.users)
+                .join(db.watchlists, db.watchlists.c.user_id == db.users.c.user_id)
+                .where(db.watchlists.c.ticker == ticker)
+            )
+            users: List[Dict] = [db.to_dict(r) for r in rows]
     except Exception as exc:                          # noqa: BLE001
         log.error("subscriber lookup failed for %s: %s", ticker, exc)
         return []
-
-    users: List[Dict] = []
-    for row in rows:
-        uid = row.get("user_id")
-        if not uid:
-            continue
-        try:
-            u = db.table("users").get_item(Key={"user_id": uid}).get("Item")
-        except Exception:                             # noqa: BLE001
-            u = None
-        if u:
-            users.append(u)
 
     _sub_cache[ticker] = (now, users)
     return users
@@ -187,35 +177,39 @@ def invalidate_subscriber_cache(ticker: Optional[str] = None) -> None:
 # persistence + fan-out
 # --------------------------------------------------------------------------
 def persist_alert(alert: Alert) -> None:
-    item = alert.to_dict()
-    item["fired_key"] = f"{alert.fired_at}#{alert.alert_id}"
-    item["gsi_all"] = "ALERT"
-    # DynamoDB rejects float; store risk as a string-safe Decimal-ish value.
-    item["risk_score"] = str(alert.risk_score)
-    item["baseline_p"] = str(alert.baseline_p)
-    item["alert_score"] = str(alert.alert_score)
-    db.table("alerts").put_item(Item=item)
+    from .models import parse_iso
+    with db.begin() as conn:
+        conn.execute(insert(db.alerts).values(
+            alert_id=alert.alert_id,
+            ticker=alert.ticker,
+            fired_at=parse_iso(alert.fired_at),
+            window_end=parse_iso(alert.window_end) if alert.window_end else None,
+            risk_score=float(alert.risk_score),
+            alert_score=float(alert.alert_score),
+            baseline_p=float(alert.baseline_p),
+            severity=alert.severity,
+            message=alert.message,
+            source=alert.source,
+            top_headline=alert.top_headline or "",
+            top_url=alert.top_url or "",
+        ))
 
 
 def record_delivery(alert: Alert, user: Dict, status: str) -> None:
-    db.table("deliveries").put_item(Item={
-        "alert_id": alert.alert_id,
-        "user_id": user["user_id"],
-        "ticker": alert.ticker,
-        "status": status,   # sent | failed | no_webhook | unverified | simulated
-        "fired_at": alert.fired_at,
-        "delivered_at": iso(utcnow()),
-    })
+    """status: sent | failed | no_webhook | unverified | simulated"""
+    with db.begin() as conn:
+        conn.execute(insert(db.deliveries).values(
+            alert_id=alert.alert_id, user_id=user["user_id"],
+            status=status, delivered_at=utcnow(),
+        ))
 
 
 def unverify_webhook(user_id: str) -> None:
     """Stop delivering to a hook that failed until its owner re-tests it."""
     try:
-        db.table("users").update_item(
-            Key={"user_id": user_id},
-            UpdateExpression="SET slack_verified_at = :v",
-            ExpressionAttributeValues={":v": ""},
-        )
+        with db.begin() as conn:
+            conn.execute(update(db.users).where(db.users.c.user_id == user_id)
+                         .values(slack_verified_at=None))
         invalidate_subscriber_cache()
     except Exception as exc:                          # noqa: BLE001
         log.warning("could not unverify webhook for %s: %s", user_id, exc)

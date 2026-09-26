@@ -1,4 +1,25 @@
-# RiskRadar — session handoff (2026-09-25, public-demo release)
+# RiskRadar — session handoff (2026-09-26)
+
+## PostgreSQL migration (latest)
+
+- DynamoDB is gone. `libs/core/riskcore/db.py` is a SQLAlchemy Core schema
+  (users, watchlists, alerts, deliveries) with FKs + ON DELETE CASCADE, a
+  unique email, and query-shaped indexes. Configure with `DATABASE_URL`
+  (`postgresql+psycopg://...`; `sqlite:///` works for tests). `db.ensure_schema()`
+  is idempotent. All queries are SQL in `webapp/src/store.py` and `riskcore/alerting.py`
+  (alert history with delivery status is one join).
+- Compose: `postgres:16-alpine` service (loopback 5432), creds from POSTGRES_* in
+  .env. AWS kit: Postgres runs in compose; IAM policy is SSM-only.
+- Azure VM: private cluster `risk-radar-postgres.service` (pgdata under
+  /srv/risk-radar, unix socket in /srv/risk-radar/run, peer auth, no TCP,
+  MemoryMax 256M, ~32 MB measured). `install.sh` never lets Ubuntu create its
+  default cluster, and on upgrade migrates the old SQLite store with
+  `tools/migrate_to_postgres.py` (idempotent, one transaction, orphans skipped),
+  keeping the SQLite file as `*.migrated-<stamp>`. Upgrade verified in the VM sim:
+  pre-migration session cookies and password logins keep working.
+- Tests: **366**, DB tests run on SQLite and on real PostgreSQL
+  (`TEST_DATABASE_URL`, default riskradar_test on localhost:5432).
+
 
 ## UI redesign (latest)
 

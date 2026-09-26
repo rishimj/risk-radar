@@ -55,7 +55,7 @@ STATUS_CACHE_SECONDS = float(os.getenv("STATUS_CACHE_SECONDS", "5"))
 status_providers: Dict[str, object] = {}
 status_labels: Dict[str, str] = {}
 templates.env.globals["stack_label"] = os.getenv(
-    "STACK_LABEL", "Kafka · PyFlink · FinBERT · Redis · DynamoDB")
+    "STACK_LABEL", "Kafka · PyFlink · FinBERT · PostgreSQL · Redis")
 templates.env.globals["guest_demo"] = GUEST_DEMO
 templates.env.globals["percentile"] = config.ALERT_PERCENTILE
 
@@ -69,10 +69,10 @@ _DUMMY_HASH = auth.hash_password("timing-equaliser")
 async def lifespan(app: FastAPI):
     for attempt in range(10):
         try:
-            db.ensure_tables()
+            db.ensure_schema()
             break
         except Exception as exc:                       # noqa: BLE001
-            log.warning("waiting for dynamodb (%d/10): %s", attempt + 1, exc)
+            log.warning("waiting for the database (%d/10): %s", attempt + 1, exc)
             time.sleep(3)
     try:
         store.purge_guests(GUEST_MAX_AGE_HOURS)

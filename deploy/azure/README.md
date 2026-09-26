@@ -1,14 +1,15 @@
 # Deploying RiskRadar to a small shared VM
 
 This is how the public demo runs: one Ubuntu 24.04 VM (2 vCPU, 4 GB) that also
-hosts another app. The full compose stack (Kafka, Flink, DynamoDB Local) needs
+hosts another app. The full compose stack (Kafka, Flink, PostgreSQL) needs
 several GB, so the VM runs **`services/standalone`** instead: the same scoring,
 windowing, alerting and web code in one Python process, with an in-process
-queue in place of Kafka and SQLite in place of DynamoDB.
+queue in place of Kafka, and a private PostgreSQL cluster on a unix socket.
 
 ```
 internet ──443──> Caddy ──> 127.0.0.1:3001  risk-radar.service  (web + ingestion + stream engine + FinBERT)
-                                              └─ unix socket ─> risk-radar-redis.service  (no TCP port)
+                                              ├─ unix socket ─> risk-radar-postgres.service  (users, alerts; no TCP port)
+                                              └─ unix socket ─> risk-radar-redis.service     (baselines, features; no TCP port)
 ```
 
 ## Deploy (from your laptop)
@@ -27,9 +28,11 @@ to VADER).
 | Does | Does not |
 |---|---|
 | create system user `riskradar`, everything in `/srv/risk-radar` (750) | stop, restart or edit any other service |
-| install `python3-venv` and the `redis-server` package | use the system Redis (if it installed the package fresh, it disables the default :6379 instance; a pre-existing one is left alone) |
+| install `python3-venv`, `redis-server` and `postgresql-16` | use the system Redis or PostgreSQL (Ubuntu's default Postgres cluster is never created; a pre-existing one is left alone; a fresh system Redis is disabled) |
+| run a private PostgreSQL cluster in `/srv/risk-radar/pgdata`, peer auth over a unix socket | open any database port |
+| migrate an existing SQLite install's users and alerts into PostgreSQL, keeping the SQLite file as a backup | delete any data |
 | write `risk-radar.env` (600) with a generated `SECRET_KEY`, once | ever overwrite an existing env file |
-| install two systemd units, `enable --now` them | bind anything to 0.0.0.0 (app: 127.0.0.1:3001, Redis: unix socket only) |
+| install three systemd units, `enable --now` them | bind anything to 0.0.0.0 (app: 127.0.0.1:3001, Postgres and Redis: unix sockets only) |
 | **append** a site block to `/etc/caddy/Caddyfile` | replace the Caddyfile: it backs it up, validates the result with `caddy validate`, restores the backup on failure, and only then `reload`s (graceful) |
 
 If the app fails its health check, the script stops **before** the Caddyfile is
@@ -37,7 +40,7 @@ touched.
 
 ## Limits that protect the rest of the VM
 
-- `MemoryMax=1500M` (`MemoryHigh=1300M`) on the app, `128M` on its Redis. Measured: ~0.8-0.9 GB steady with FinBERT.
+- `MemoryMax=1500M` (`MemoryHigh=1300M`) on the app, `256M` on its PostgreSQL (~32 MB measured), `128M` on its Redis. Measured: ~0.8-0.9 GB steady with FinBERT.
 - `CPUQuota=100%`: at most one of the two cores; one BLAS thread.
 - Sandboxing: `ProtectSystem=strict`, `NoNewPrivileges`, `PrivateTmp`, no capabilities, `ReadWritePaths` limited to `data/` and `models/`. `systemd-analyze security risk-radar` scores 3.0 ("OK").
 - Code and venv are owned by root, readable by the service: the running app cannot modify itself.
@@ -65,8 +68,8 @@ accounts deleted after 48 h and barred from Slack; one simulation site-wide per
 ## Uninstall
 
 ```bash
-sudo systemctl disable --now risk-radar risk-radar-redis
-sudo rm /etc/systemd/system/risk-radar.service /etc/systemd/system/risk-radar-redis.service
+sudo systemctl disable --now risk-radar risk-radar-redis risk-radar-postgres
+sudo rm /etc/systemd/system/risk-radar.service /etc/systemd/system/risk-radar-redis.service /etc/systemd/system/risk-radar-postgres.service
 sudo systemctl daemon-reload
 # remove the "# ---- RiskRadar ..." block from /etc/caddy/Caddyfile, then:
 sudo systemctl reload caddy

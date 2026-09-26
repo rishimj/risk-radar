@@ -43,7 +43,7 @@ up:
 down:
 	docker compose --profile flink --profile lite down
 
-clean: ## down + delete volumes (kafka data, dynamo tables, model cache)
+clean: ## down + delete volumes (kafka data, postgres data, model cache)
 	docker compose --profile flink --profile lite down -v
 
 logs:

@@ -9,15 +9,12 @@ name: riskradar
 #   --profile flink   flink-jobmanager + flink-taskmanager + flink-submit  (~2.5GB, amd64)
 #   --profile lite    processor: the same topology in one Python process  (~100MB, native)
 # `make demo` uses flink, `make demo-lite` uses lite. Everything without a
-# profile (kafka, redis, dynamo, enrichment, ingestion, webapp) runs under both.
+# profile (kafka, redis, postgres, enrichment, ingestion, webapp) runs under both.
 
 x-common-env: &common-env
   KAFKA_BOOTSTRAP: kafka:9092
   REDIS_URL: redis://redis:6379/0
-  DYNAMO_ENDPOINT_URL: http://dynamodb-local:8000
-  AWS_REGION: ${AWS_REGION:-us-east-1}
-  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-local}
-  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-local}
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-riskradar}:${POSTGRES_PASSWORD:-riskradar}@postgres:5432/${POSTGRES_DB:-riskradar}
   ENRICHMENT_URL: http://enrichment:8082
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
   # Risk/alert/window tuning. These were documented in .env.example but never
@@ -112,16 +109,25 @@ services:
       retries: 5
     restart: unless-stopped
 
-  dynamodb-local:
-    image: amazon/dynamodb-local:latest
-    # -dbPath with -sharedDb so data survives restarts and every client sees one namespace.
-    command: ["-Xmx256m", "-jar", "DynamoDBLocal.jar", "-sharedDb", "-dbPath", "/data"]
-    working_dir: /home/dynamodblocal
-    user: root
+  # Users, watchlists, alert history and deliveries (schema: libs/core/riskcore/db.py,
+  # created idempotently by whichever service starts first). Published on
+  # loopback only, for psql and the test suite.
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-riskradar}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-riskradar}
+      POSTGRES_DB: ${POSTGRES_DB:-riskradar}
+    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=50"]
     ports:
-      - "8000:8000"
+      - "127.0.0.1:5432:5432"
     volumes:
-      - dynamodb-data:/data
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-riskradar} -d ${POSTGRES_DB:-riskradar}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
     restart: unless-stopped
 
   # Browsing-only convenience; nothing in the pipeline depends on it. Assigned to
@@ -185,6 +191,7 @@ services:
     depends_on:
       kafka: {condition: service_healthy}
       redis: {condition: service_healthy}
+      postgres: {condition: service_healthy}
     ports:
       - "3000:3000"
     environment:
@@ -272,6 +279,7 @@ services:
     depends_on:
       flink-jobmanager: {condition: service_healthy}
       kafka: {condition: service_healthy}
+      postgres: {condition: service_healthy}
       enrichment: {condition: service_healthy}
     environment:
       <<: *common-env
@@ -293,6 +301,7 @@ services:
     depends_on:
       kafka: {condition: service_healthy}
       redis: {condition: service_healthy}
+      postgres: {condition: service_healthy}
       enrichment: {condition: service_healthy}
     ports:
       - "8083:8083"
@@ -308,6 +317,6 @@ services:
 volumes:
   kafka-data:
   redis-data:
-  dynamodb-data:
+  postgres-data:
   model-cache:
   flink-checkpoints:
