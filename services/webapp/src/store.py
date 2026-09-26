@@ -54,7 +54,7 @@ def create_user(email: str, password_hash: str, guest: bool = False) -> Dict:
 
 
 def create_guest() -> Dict:
-    """A throwaway account with no password, so recruiters can try it in one click.
+    """A throwaway account with no password, so visitors can try it in one click.
 
     The password hash is deliberately not a bcrypt string, so verify_password
     always fails: a guest session can only come from the cookie issued here.
